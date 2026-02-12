@@ -1,0 +1,15 @@
+# Workspace (raw API responses, cached data)
+_workspace/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.claude/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+nul
