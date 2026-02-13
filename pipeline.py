@@ -5,9 +5,21 @@ Takes a website URL and produces a skill folder that AI agents can search
 using ripgrep. Each page becomes a markdown file with YAML frontmatter.
 
 Usage:
-    python pipeline.py https://example.com
-    python pipeline.py https://example.com --name my-website --limit 500
-    python pipeline.py https://example.com --skip-scrape   # reuse cached scrape
+    python pipeline.py https://csaok.com
+    python pipeline.py csaok.com
+    python pipeline.py https://csaok.com/about --description "Cosmetic surgery practice"
+    python pipeline.py https://csaok.com --skip-scrape   # reuse cached scrape
+
+Input handling:
+    The script accepts any of these and resolves to the same domain:
+      https://csaok.com            → domain: csaok.com
+      http://csaok.com/about       → domain: csaok.com
+      csaok.com                    → domain: csaok.com
+      www.csaok.com                → domain: csaok.com (www. stripped)
+      blog.example.com             → domain: blog.example.com (subdomain kept)
+
+    The domain becomes: skill name, output folder name, workspace key,
+    and the {domain} variable in skill-md.template.
 """
 
 import argparse
@@ -19,6 +31,151 @@ import time
 from urllib.parse import urlparse
 
 import requests
+from pydantic import BaseModel, field_validator
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+
+class PipelineInput(BaseModel):
+    """Validates and normalizes the user's input into a clean domain.
+
+    Accepts any URL-like string and resolves it to a domain.
+    The domain is the single key that drives everything:
+    - Skill name (D6: skill name = domain)
+    - Map API URL (https://{domain})
+    - Output directory (output/{domain})
+    - Workspace directory (_workspace/{domain})
+    - Template variable ({domain} in skill-md.template)
+
+    Subdomain handling (per D6):
+    - www.example.com  → example.com (www. is cosmetic, stripped)
+    - blog.example.com → blog.example.com (different website, kept)
+    - docs.stripe.com  → docs.stripe.com (different website, kept)
+    """
+
+    url: str
+    description: str = ""
+    output: str | None = None
+    limit: int = 5000
+    skip_scrape: bool = False
+
+    # Resolved fields (set by validators)
+    domain: str = ""
+    map_url: str = ""
+
+    @field_validator("url")
+    @classmethod
+    def normalize_url(cls, v: str) -> str:
+        """Accept any URL-like input and normalize to https://domain."""
+        v = v.strip()
+        if not v:
+            raise ValueError("URL cannot be empty. Pass a website URL like: https://example.com")
+
+        # Add scheme if missing (bare domain like "csaok.com")
+        if not v.startswith(("http://", "https://")):
+            v = f"https://{v}"
+
+        parsed = urlparse(v)
+        if not parsed.netloc:
+            raise ValueError(
+                f"Could not parse domain from '{v}'.\n"
+                f"Expected a URL like: https://example.com or just: example.com"
+            )
+
+        # Reject obvious non-website inputs
+        if "." not in parsed.netloc:
+            raise ValueError(
+                f"'{parsed.netloc}' doesn't look like a domain.\n"
+                f"Expected something like: example.com, docs.stripe.com"
+            )
+
+        return v
+
+    @field_validator("limit")
+    @classmethod
+    def validate_limit(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Limit must be at least 1")
+        if v > 100_000:
+            raise ValueError("Limit cannot exceed 100,000 (Firecrawl API max)")
+        return v
+
+    def model_post_init(self, __context) -> None:
+        """Resolve domain and map_url from the validated URL."""
+        parsed = urlparse(self.url)
+        netloc = parsed.netloc.lower()
+
+        # Strip www. — it's cosmetic, not a real subdomain
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+
+        # Strip port if present (e.g. localhost:3000 during testing)
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+
+        self.domain = netloc
+        self.map_url = f"https://{self.domain}"
+
+        # Set defaults that depend on domain
+        if not self.output:
+            self.output = os.path.join("output", self.domain)
+        if not self.description:
+            self.description = f"a website at {self.domain}."
+
+
+def parse_args() -> PipelineInput:
+    """Parse CLI arguments and return validated PipelineInput."""
+    parser = argparse.ArgumentParser(
+        description="Convert a website into an AI-searchable skill folder.",
+        epilog=(
+            "Examples:\n"
+            "  python pipeline.py https://csaok.com\n"
+            "  python pipeline.py csaok.com\n"
+            "  python pipeline.py https://docs.stripe.com --limit 100\n"
+            "  python pipeline.py csaok.com --skip-scrape\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "url",
+        help="Website URL or domain (e.g. https://example.com or example.com)",
+    )
+    parser.add_argument(
+        "--description",
+        help="One-line site description for SKILL.md header",
+        default="",
+    )
+    parser.add_argument(
+        "--output",
+        help="Output directory (default: ./output/{domain})",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=5000,
+        help="Max URLs to discover in map step (default: 5000, max: 100000)",
+    )
+    parser.add_argument(
+        "--skip-scrape",
+        action="store_true",
+        help="Skip map+scrape, reuse cached data from workspace",
+    )
+
+    args = parser.parse_args()
+
+    try:
+        return PipelineInput(
+            url=args.url,
+            description=args.description or "",
+            output=args.output,
+            limit=args.limit,
+            skip_scrape=args.skip_scrape,
+        )
+    except Exception as e:
+        parser.error(str(e))
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -35,7 +192,7 @@ BATCH_SIZE = 100          # URLs per batch scrape request
 POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
 
-# JSON extraction prompt — tells Firecrawl's LLM what we want
+# JSON extraction prompt — tells Firecrawl's LLM what we want (see plan.md D3)
 JSON_PROMPT = (
     "Extract structured metadata from this web page. This metadata will serve "
     "as frontmatter in a reference file that AI agents search through to find "
@@ -97,7 +254,7 @@ def get_api_key() -> str:
 
 
 def url_to_slug(url: str) -> str:
-    """Convert a URL path to a filesystem-safe slug."""
+    """Convert a URL path to a filesystem-safe slug (see plan.md D9)."""
     path = urlparse(url.rstrip("/")).path.strip("/")
     if not path:
         return "index"
@@ -112,7 +269,7 @@ def yaml_escape(s: str) -> str:
 
 
 def clean_markdown(md: str) -> str:
-    """Strip leading junk lines (SVG icons, consult buttons, nav remnants)."""
+    """Strip leading junk lines (see plan.md D8)."""
     lines = md.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -146,25 +303,21 @@ def wrap_summary(summary: str, indent: int = 2, width: int = 80) -> str:
     return "\n".join(lines)
 
 
-def domain_from_url(url: str) -> str:
-    """Extract the domain from a URL."""
-    return urlparse(url).netloc
-
-
-def skill_name_from_domain(domain: str) -> str:
-    """Skill name = domain (strip www. prefix)."""
-    return domain.removeprefix("www.")
-
-
 # ---------------------------------------------------------------------------
 # Step 1: Map — discover all URLs
 # ---------------------------------------------------------------------------
 
 
-def map_website(url: str, api_key: str, limit: int = 5000) -> list[str]:
-    """Use Firecrawl Map API to discover all pages on a website."""
+def map_website(map_url: str, api_key: str, limit: int = 5000) -> list[str]:
+    """Use Firecrawl Map API to discover all pages on a website.
+
+    The Map endpoint expects a full URI (format: uri), so we pass
+    https://{domain} which was resolved during input validation.
+    We set includeSubdomains=False because subdomains are treated
+    as separate websites (see plan.md D6).
+    """
     print(f"\n{'='*60}")
-    print(f"STEP 1: Map — discovering pages on {url}")
+    print(f"STEP 1: Map — discovering pages on {map_url}")
     print(f"{'='*60}")
 
     headers = {
@@ -172,7 +325,7 @@ def map_website(url: str, api_key: str, limit: int = 5000) -> list[str]:
         "Content-Type": "application/json",
     }
     payload = {
-        "url": url,
+        "url": map_url,
         "includeSubdomains": False,
         "ignoreQueryParameters": True,
         "limit": limit,
@@ -324,10 +477,8 @@ def assemble_pages(pages: list[dict], pages_dir: str) -> int:
 
 def generate_skill_md(
     output_dir: str,
-    skill_name: str,
     domain: str,
     site_description: str,
-    page_count: int,
 ) -> None:
     """Generate SKILL.md by rendering skill-md.template with variables.
 
@@ -338,7 +489,6 @@ def generate_skill_md(
       {site_description} — one-line description of the website
     See plan.md D6 for rationale.
     """
-    # Find template relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     template_path = os.path.join(script_dir, "skill-md.template")
 
@@ -361,60 +511,27 @@ def generate_skill_md(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert a website into an AI-searchable skill folder."
-    )
-    parser.add_argument("url", help="The website URL to convert")
-    parser.add_argument(
-        "--name",
-        help="Skill folder name (default: derived from domain)",
-    )
-    parser.add_argument(
-        "--description",
-        help="One-line site description (shown in SKILL.md header)",
-        default="",
-    )
-    parser.add_argument(
-        "--output",
-        help="Output directory (default: ./output/{name})",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=5000,
-        help="Max URLs to discover in map step (default: 5000)",
-    )
-    parser.add_argument(
-        "--skip-scrape",
-        action="store_true",
-        help="Skip map+scrape, reuse cached data from workspace",
-    )
+    config = parse_args()
 
-    args = parser.parse_args()
-
-    # Derive names
-    domain = domain_from_url(args.url)
-    skill_name = args.name or skill_name_from_domain(domain)
-    output_dir = args.output or os.path.join("output", skill_name)
-    workspace_dir = os.path.join("_workspace", domain)
+    workspace_dir = os.path.join("_workspace", config.domain)
 
     api_key = get_api_key()
 
     print(f"Website-to-Skill Pipeline")
-    print(f"  URL:         {args.url}")
-    print(f"  Domain:      {domain}")
-    print(f"  Skill name:  {skill_name}")
-    print(f"  Output:      {output_dir}")
+    print(f"  Input:       {config.url}")
+    print(f"  Domain:      {config.domain}")
+    print(f"  Map URL:     {config.map_url}")
+    print(f"  Output:      {config.output}")
     print(f"  Workspace:   {workspace_dir}")
 
     os.makedirs(workspace_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(config.output, exist_ok=True)
 
-    if args.skip_scrape:
+    if config.skip_scrape:
         # Load cached scrape data
         cache_path = os.path.join(workspace_dir, "batch-response.json")
         if not os.path.exists(cache_path):
-            print(f"ERROR: No cached data at {cache_path}")
+            print(f"\nERROR: No cached data at {cache_path}")
             print("Run without --skip-scrape first.")
             sys.exit(1)
         print(f"\nSkipping map+scrape, loading cached data from {cache_path}")
@@ -423,7 +540,7 @@ def main():
         pages = scrape_data if isinstance(scrape_data, list) else scrape_data.get("data", [])
     else:
         # Step 1: Map
-        urls = map_website(args.url, api_key, limit=args.limit)
+        urls = map_website(config.map_url, api_key, limit=config.limit)
 
         # Save URL list
         map_path = os.path.join(workspace_dir, "map-urls.txt")
@@ -445,23 +562,21 @@ def main():
     print(f"STEP 3: Assemble — building skill folder")
     print(f"{'='*60}")
 
-    pages_dir = os.path.join(output_dir, "pages")
+    pages_dir = os.path.join(config.output, "pages")
     page_count = assemble_pages(pages, pages_dir)
     print(f"  Wrote {page_count} page files to {pages_dir}/")
 
-    # Generate SKILL.md
-    site_description = args.description or f"a website at {domain}."
-    generate_skill_md(output_dir, skill_name, domain, site_description, page_count)
+    generate_skill_md(config.output, config.domain, config.description)
     print(f"  Wrote SKILL.md")
 
     # Summary
     print(f"\n{'='*60}")
     print(f"DONE")
     print(f"{'='*60}")
-    print(f"  Skill folder: {output_dir}/")
+    print(f"  Skill folder: {config.output}/")
     print(f"  Pages:        {page_count}")
-    print(f"  SKILL.md:     {os.path.join(output_dir, 'SKILL.md')}")
-    print(f"\n  Estimated cost: 1 + {page_count} × 5 = {1 + page_count * 5} credits")
+    print(f"  SKILL.md:     {os.path.join(config.output, 'SKILL.md')}")
+    print(f"\n  Estimated cost: 1 + {page_count} x 5 = {1 + page_count * 5} credits")
 
 
 if __name__ == "__main__":
