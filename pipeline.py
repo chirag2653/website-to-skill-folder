@@ -10,6 +10,7 @@ Usage:
     python pipeline.py https://csaok.com/about --description "Cosmetic surgery practice"
     python pipeline.py https://csaok.com --skip-scrape   # reuse cached scrape
     python pipeline.py https://csaok.com --force-refresh  # ignore cache, scrape all
+    python pipeline.py https://csaok.com --max-pages 100  # limit skill folder to 100 pages
 
 Modes:
     Default (no flags):  Incremental update -- always maps, compares, scrapes only new URLs
@@ -24,9 +25,10 @@ Input handling:
       www.csaok.com                -> domain: csaok.com (www. stripped)
       blog.example.com             -> domain: blog.example.com (subdomain kept)
 
-    The domain becomes: output folder name, workspace key, and the {domain}
-    variable in skill-md.template. The skill name is derived from domain
-    as: {domain}-website-search-skill (e.g. csaok-com-website-search-skill).
+    The skill name is derived from domain as: {domain}-website-search-skill 
+    (e.g. csaok-com-website-search-skill). The output folder uses the skill name.
+    The workspace uses the domain as the key. The {domain} variable in 
+    skill-md.template uses the domain.
 """
 
 import argparse
@@ -110,7 +112,7 @@ class PipelineInput(BaseModel):
     The domain is the single key that drives everything:
     - Skill name: {domain}-website-search-skill (e.g. csaok-com-website-search-skill)
     - Map API URL (https://{domain})
-    - Output directory (output/{domain})
+    - Output directory (output/{skill_name})
     - Workspace directory (_workspace/{domain})
     - Template variables ({domain} and {skill_name} in skill-md.template)
 
@@ -123,7 +125,8 @@ class PipelineInput(BaseModel):
     url: str
     description: str = ""
     output: str | None = None
-    limit: int = 5000
+    limit: int = 100_000  # Max discovery (Firecrawl API max, effectively unlimited)
+    max_pages: int | None = None  # Max pages to scrape (controls final skill folder size)
     skip_scrape: bool = False
     force_refresh: bool = False
 
@@ -222,7 +225,8 @@ class PipelineInput(BaseModel):
 
         # Set defaults that depend on domain
         if not self.output:
-            self.output = os.path.join("output", self.domain)
+            # Use skill_name for folder name (e.g., csaok-com-website-search-skill)
+            self.output = os.path.join("output", self.skill_name)
         if not self.description:
             self.description = f"a website at {self.domain}."
 
@@ -235,7 +239,7 @@ def parse_args() -> PipelineInput:
             "Examples:\n"
             "  python pipeline.py https://csaok.com\n"
             "  python pipeline.py csaok.com\n"
-            "  python pipeline.py docs.stripe.com --limit 100\n"
+            "  python pipeline.py docs.stripe.com --max-pages 100\n"
             "  python pipeline.py csaok.com --skip-scrape\n"
             "  python pipeline.py csaok.com --force-refresh\n"
             "\n"
@@ -272,13 +276,19 @@ def parse_args() -> PipelineInput:
     )
     parser.add_argument(
         "--output",
-        help="Output directory (default: ./output/{domain})",
+        help="Output directory (default: ./output/{skill_name})",
     )
     parser.add_argument(
         "--limit",
         type=int,
-        default=5000,
-        help="Max URLs to discover in map step (default: 5000, max: 100000)",
+        default=100_000,
+        help="Max URLs to discover in map step (default: 100000, effectively unlimited)",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        help="Max pages to scrape and include in skill folder (default: all discovered URLs). Controls final skill folder size. UI-exposable parameter.",
     )
     parser.add_argument(
         "--skip-scrape",
@@ -303,6 +313,7 @@ def parse_args() -> PipelineInput:
             description=args.description or "",
             output=args.output,
             limit=args.limit,
+            max_pages=args.max_pages,
             skip_scrape=args.skip_scrape,
             force_refresh=args.force_refresh,
         )
@@ -1285,6 +1296,15 @@ def main():
             existing_pages = []
             print(
                 f"\n  First run: will scrape all {len(urls_to_scrape)} URLs"
+            )
+
+        # Apply max_pages limit if set (controls final skill folder size)
+        if config.max_pages and len(urls_to_scrape) > config.max_pages:
+            original_count = len(urls_to_scrape)
+            urls_to_scrape = urls_to_scrape[:config.max_pages]
+            print(
+                f"\n  Max pages limit: limiting to first {config.max_pages} pages "
+                f"(discovered {original_count} URLs, will scrape {len(urls_to_scrape)} pages)"
             )
 
         # Step 2b: Batch scrape new URLs
