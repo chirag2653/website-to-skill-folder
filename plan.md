@@ -13,14 +13,12 @@ loading all pages into context.
 ```
 website-to-skill-folder/
 ├── skill-md.template          # SKILL.md template — single source of truth
+├── REFERENCE.md                # Complete reference: folder structure & page format
 ├── pipeline.py                # Reads template, scrapes site, assembles folder
 ├── plan.md                    # Design decisions with rationale (this file)
-├── sample-skill-folder/       # Reference output — regenerated, not hand-edited
-│   ├── SKILL.md               # Rendered from skill-md.template
-│   └── pages/                 # 10 test pages from csaok.com
 └── _workspace/                # Cached API responses (gitignored)
-    └── csaok.com/
-        ├── 1-map.txt
+    └── {domain}/
+        ├── map-urls.txt
         └── batch-response.json
 ```
 
@@ -28,36 +26,37 @@ website-to-skill-folder/
 
 | File | Role | When to edit |
 |------|------|-------------|
-| `skill-md.template` | SKILL.md content with `{domain}` and `{site_description}` placeholders | When changing what agents see (search protocol, tips, wording) |
+| `skill-md.template` | SKILL.md content with `{domain}`, `{skill_name}`, and `{site_description}` placeholders | When changing what agents see (search protocol, tips, wording) |
+| `REFERENCE.md` | Complete reference: folder structure, page format, frontmatter fields | When structure or format changes (documentation only) |
 | `pipeline.py` | Map → Batch Scrape → Assemble pipeline | When changing page format, frontmatter, cleanup, or API logic |
 | `plan.md` | Design decisions (D1–D9) with rationale | When a decision changes (not for wording tweaks) |
-| `sample-skill-folder/` | Rendered reference output | Never edit directly — regenerate with pipeline.py |
 
 ### Iteration workflow
 
 ```
 1. Edit skill-md.template (or pipeline.py for page format changes)
-2. Regenerate:  python pipeline.py https://csaok.com \
-                  --description "Cosmetic Surgery Affiliates, ..." \
-                  --output sample-skill-folder --skip-scrape
-3. Test sample-skill-folder/ with real agents
+2. Regenerate: python pipeline.py https://example.com --description "Site description"
+3. Test output/{domain}/ with real agents
 4. Repeat until agents use it smoothly
 5. If a design decision changed, update plan.md
 ```
 
 One file to edit → one command to regenerate → test → repeat.
 
+**Reference files:**
+- `skill-md.template` - Template for SKILL.md (edit this to change skill content)
+- `REFERENCE.md` - Complete reference documentation (folder structure, page format, frontmatter fields)
+
 ---
 
 ## Phases
 
-**Phase 1 (current):** Iterate on the sample skill folder until agents use it
-smoothly. Zero credits burned — uses cached 10-page scrape data.
+**Phase 1:** Iterate on templates and pipeline until agents use it smoothly.
 
-**Phase 2:** Run pipeline on all 247 csaok.com pages. Validate at scale.
+**Phase 2:** Run pipeline on full websites. Validate at scale.
 
 **Phase 3:** Package as reusable skill in `personal-ai-agent-toolkit`.
-Test on a second website (different industry) to confirm generality.
+Test on multiple websites (different industries) to confirm generality.
 
 ---
 
@@ -155,22 +154,25 @@ SKILL.md file location. All command examples use `$PAGES` placeholder.
 
 **Origin:** Found by a real agent that stumbled through failed searches.
 
-### D6: Skill name = domain, 2 template variables
+### D6: Skill name format, 3 template variables
 
-The skill name IS the domain: `csaok.com`, `docs.stripe.com`,
-`blog.example.com`. Strip `www.` only.
+The skill name format is: `{domain}-website-search-skill` where dots in
+the domain are replaced with hyphens. Examples:
+- `csaok.com` → `csaok-com-website-search-skill`
+- `docs.stripe.com` → `docs-stripe-com-website-search-skill`
 
-Only two variables in skill-md.template:
+Three variables in skill-md.template:
 
 | Variable | Example |
 |----------|---------|
 | `{domain}` | `csaok.com` |
+| `{skill_name}` | `csaok-com-website-search-skill` |
 | `{site_description}` | `Cosmetic Surgery Affiliates, a cosmetic surgery and med spa practice...` |
 
-**Why domain as name:** Unambiguous. Agent needs info from csaok.com →
-searches "csaok.com" → finds the skill.
+**Why rich skill name:** More descriptive and searchable. Agents can find
+skills by searching for "website search skill" patterns.
 
-**Why only 2 variables:** Everything else in SKILL.md (search protocol,
+**Why only 3 variables:** Everything else in SKILL.md (search protocol,
 tips, discovery commands) is identical across all websites. When pages
 change, SKILL.md doesn't need to change.
 
@@ -239,6 +241,68 @@ Local file generation. Reads `skill-md.template` for SKILL.md, writes
 
 ---
 
+## Production Improvements (Implemented)
+
+### Retry Logic (Tenacity)
+
+All API calls (map, batch submit, batch poll, pagination) now have
+automatic retry with exponential backoff (2s → 60s, 5 attempts).
+Retries on transient failures: network timeouts, connection errors,
+HTTP 429/500/502/503/504. Permanent failures (400/401/403/404) fail
+immediately.
+
+### State Persistence & Resume
+
+Pipeline state is saved incrementally to `_workspace/{domain}/state.json`.
+If the script crashes mid-run, restarting picks up where it left off:
+completed batches are loaded from cache, in-progress batches resume
+polling. State is saved atomically (temp file + rename).
+
+### Incremental Updates (Phase 1)
+
+Default behavior is now incremental update:
+1. Always call Map API to get fresh URL list
+2. Compare new URLs vs cached URLs
+3. Only scrape new URLs (load existing pages from cache)
+
+Three CLI modes:
+- **Default**: Incremental update (smart — only scrapes new pages)
+- **`--skip-scrape`**: Idempotent (zero API calls, uses cache)
+- **`--force-refresh`**: Full refresh (ignores cache, scrapes everything)
+
+### Batch ID Idempotency
+
+Batch IDs are deterministic hashes of sorted URLs. Same URLs = same
+batch_id. Completed batches are never re-submitted.
+
+---
+
+## Future Improvements
+
+### Phase 2: Change Detection
+
+Detect when existing pages have changed content (not just new pages).
+
+- Store content hash per page on first scrape
+- On incremental update, compare content hashes
+- Re-scrape pages where content changed
+- Track "last_scraped" timestamp per page
+
+**When to implement:** After Phase 1 is stable and tested in production.
+
+### Phase 3: Deleted Pages Handling
+
+Detect and handle pages that have been removed from the website.
+
+- Compare map results to find URLs that disappeared
+- Option to remove deleted pages from skill folder (`--clean-deleted`)
+- Option to keep deleted pages with a `deleted: true` frontmatter flag
+- Log deleted pages for review
+
+**When to implement:** After Phase 2 is stable.
+
+---
+
 ## Open Issues
 
 - [ ] Trailing CTA/popup cleanup (D8)
@@ -246,3 +310,4 @@ Local file generation. Reads `skill-md.template` for SKILL.md, writes
 - [ ] Agent tool compatibility — SKILL.md assumes bash (`rg` + `head`),
   some agents use dedicated Read/Grep tools (D5)
 - [ ] Scale validation with 247 pages (D7)
+- [ ] Concurrent runs not handled (state.json has no locking)
