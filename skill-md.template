@@ -1,15 +1,15 @@
 ---
-name: csaok.com
+name: {domain}
 description: >
-  Searchable reference for csaok.com. Contains all pages from this website
+  Searchable reference for {domain}. Contains all pages from this website
   as searchable markdown files. Use this skill to find information on this
   website — search pages by keyword, read summaries, and load relevant
   pages without browsing the live site.
 ---
 
-# Website Search — csaok.com
+# Website Search — {domain}
 
-This skill gives you searchable access to csaok.com — Cosmetic Surgery Affiliates, a cosmetic surgery and med spa practice with locations in Oklahoma City, OK and Jacksonville, FL.
+This skill gives you searchable access to {domain} — {site_description}
 
 The website's pages are stored as markdown files in `pages/`, each with
 YAML frontmatter (title, description, url, summary). Use `rg` (ripgrep)
