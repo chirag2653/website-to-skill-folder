@@ -1,10 +1,16 @@
 ---
-name: {domain}
+name: {skill_name}
 description: >
-  Searchable reference for {domain}. Contains all pages from this website
-  as searchable markdown files. Use this skill to find information on this
-  website — search pages by keyword, read summaries, and load relevant
-  pages without browsing the live site.
+  Searchable reference for {domain} containing all website pages as markdown
+  files with frontmatter summaries. Use when you need information about
+  {domain}, its content, services, pages, or any topic that might be
+  covered on the website for: (1) Finding specific information or answers,
+  (2) Searching pages by keyword without browsing the live site, (3) Reviewing
+  page summaries to identify relevant content, (4) Loading relevant pages
+  into context, (5) Analyzing patterns across pages (CTAs, value propositions,
+  messaging, themes), or any other website information or content analysis
+  tasks. Do not browse the live site — use this skill as the primary information
+  source for {domain}.
 ---
 
 # Website Search — {domain}
@@ -15,19 +21,29 @@ The website's pages are stored as markdown files in `pages/`, each with
 YAML frontmatter (title, description, url, summary). Use `rg` (ripgrep)
 to search without loading pages into context.
 
-## Important — resolve the pages path first
+## Tool: ripgrep (rg)
+
+**Always use `rg` (ripgrep) for searching.** This is the only search tool you need.
+
+- `rg` searches both frontmatter AND page content simultaneously
+- `rg -l "pattern"` returns filenames only (no content loaded into context)
+- `rg "pattern"` (without `-l`) returns matching lines (loads content)
+- Use `rg` for all searches — do not use grep, find, or other search tools
+
+**If `rg` fails**: Install with `winget install BurntSushi.ripgrep.MSVC` (Windows), `brew install ripgrep` (macOS), or `apt install ripgrep` (Linux). This tool is required — do not search without it.
+
+## Path Resolution
 
 The `pages/` directory is **in the same folder as this SKILL.md file**.
-Your working directory is probably NOT this skill folder, so bare
-`pages/` paths will fail. Before running any search commands, resolve
-the absolute path:
+Your working directory is probably NOT this skill folder, so bare `pages/`
+paths will fail.
 
-```
-PAGES_DIR = <directory containing this SKILL.md>/pages
-```
+**How to resolve:**
+1. Find the absolute path to this SKILL.md file
+2. Append `/pages` to that path
+3. Use that absolute path as `$PAGES` in all commands below
 
-Use that absolute path in all commands below. Every time you see
-`$PAGES` in the examples, substitute the resolved path.
+**Example:** If SKILL.md is at `/path/to/skill/SKILL.md`, then `$PAGES = /path/to/skill/pages`
 
 ## Search Flow
 
@@ -35,64 +51,162 @@ Use that absolute path in all commands below. Every time you see
 Query
   → Step 1: Expand query into search keywords
   → Step 2: rg -l "term1|term2|term3" $PAGES        → candidate filenames
-  → Step 3: rg -l "..." $PAGES | xargs head -n 12   → frontmatter of candidates
-  → Step 4: Pick relevant pages from summaries
-  → Step 5: Load only those pages fully
+  → Step 3: rg -l "..." $PAGES | xargs head -n 12   → frontmatter preview
+  → Step 4: Reason over ALL frontmatter fields to select pages
+  → Step 5: Load selected pages (1-3 quick, 3-7 moderate, 7+ deep research)
 ```
 
-### Step 1 — Expand your query into keywords
+## Core Workflow
 
-Before searching, think about what words the website might use for your topic.
-Expand into synonyms, formal terms, informal terms, and related concepts.
-This is what makes the search semantic — you bridge the gap between your query
-and the website's language.
+### Step 1 — Expand query into keywords
 
-**Always expand into 3-5 terms covering different variations.**
+**Site context**: {site_description}
 
-To see what terms the site actually uses, run a discovery command first:
+Use this context to guide expansion. Apply these universal patterns:
 
+**Common query types and expansions:**
+
+- **Pricing/Cost**: `pricing|price|cost|fee|fees|costs|rates|pricing information|how much|payment|plans|tiers`
+- **Contact/Location**: `contact|reach|location|locations|address|phone|email|office|find us|where|directions`
+- **Service/Product**: `services|service|offerings|treatments|procedures|products|solutions|what we offer|what we do`
+- **Features/Capabilities**: `features|feature|capabilities|what it does|functionality|tools|what can|includes`
+- **Integrations/API**: `integrations|integration|connects|works with|api|connect|integrate|third party|connectivity`
+- **Case Studies/Testimonials**: `case studies|case study|testimonials|reviews|success stories|customers|clients|examples|results`
+- **Portfolio/Work**: `portfolio|work|projects|examples|showcase|gallery|what we've done|our work|before after`
+- **Resources/Blog**: `resources|blog|guides|documentation|help|knowledge base|articles|learn|tutorials|content`
+- **Information/About**: `about|information|details|overview|what is|learn more|read more|background`
+- **Process/How-to**: `how|process|steps|procedure|method|guide|instructions|workflow|getting started`
+- **Team/People**: `team|staff|people|doctors|surgeons|experts|professionals|who|our team`
+- **FAQ/Help**: `faq|questions|help|support|common questions|answers|troubleshooting`
+
+**Expansion guidelines:**
+- Include synonyms (formal + informal), singular + plural forms, related concepts
+- Use pipe `|` to combine: `term1|term2|term3`
+- Typically expand to 5-8 terms, but adapt based on query complexity
+- For domain-specific terms, consider: {site_description}
+
+**Optional discovery** (if unsure about site vocabulary):
 ```bash
-# See all page titles — gives you the site's vocabulary
-rg "^title:" $PAGES
-
-# See filenames — URL slugs hint at content
-ls $PAGES
+rg "^title:" $PAGES  # See all page titles
+ls $PAGES            # See filenames (hint at content)
 ```
 
-Then expand your query using what you learned:
-
-- Your query uses informal language? → add the formal/technical term
-- Your query uses technical language? → add the common/colloquial term
-- Looking for a specific topic? → add related subtopics and broader categories
-- Not sure what exists? → search a broad category first, then narrow
-
-### Step 2 — Find candidates
+### Step 2 — Find candidate pages
 
 ```bash
 rg -l "term1|term2|term3" $PAGES
 ```
 
-Returns filenames only. Nothing loaded into context. Too many results? Narrow:
+Returns filenames only. Nothing loaded into context.
 
+**If too many results** (20+), narrow with pipe pattern:
 ```bash
 rg -l "broad_term" $PAGES | xargs rg -l "specific_term"
 ```
 
-### Step 3 — Screen via frontmatter
+**If no results**, try broader terms or check discovery commands.
+
+### Step 3 — Preview frontmatter
 
 ```bash
 rg -l "term1|term2" $PAGES | xargs head -n 12
 ```
 
-Shows title, description, url, and summary of each candidate. Read the
-summaries to judge relevance. Skip pages where the keyword appears
-incidentally. Pick pages where the summary confirms the topic.
+Shows complete frontmatter for each candidate:
+- **title**: Page title (often contains key terms)
+- **description**: 1-2 sentence description (quick relevance check)
+- **url**: Page URL (slug reveals page type, e.g., `/services/botox` → service page)
+- **summary**: 3-5 sentence content manifest (most detailed, keyword-rich)
+- **filename**: From Step 2 output (mirrors URL structure, e.g., `services--botox.md`)
 
-### Step 4 — Load relevant pages
+**Reason over ALL frontmatter fields together:**
+- Title: Exact term matches → strong signal
+- Description: Quick context → moderate signal
+- URL/filename: Page type/hierarchy → context signal
+- Summary: Detailed manifest → strongest signal
 
-Read only the files you chose (using their full paths from Step 2/3 output).
+**Selection strategy:**
+- **Strong match**: Keyword in title OR summary → high priority
+- **Moderate match**: Keyword in description OR URL/filename → medium priority
+- **Weak match**: Keyword only in body (not in frontmatter) → skip
+- Skip pages where keywords appear incidentally (navigation, footer)
 
-## Page Structure
+### Step 4 — Decide how many pages to load
+
+**Query types and page counts:**
+
+**Quick queries** (1-3 pages):
+- Specific facts: "What is the phone number?" → Load contact page
+- Single topic: "What is Botox pricing?" → Load Botox service page
+- Simple questions: "Where are they located?" → Load location page
+
+**Moderate queries** (3-7 pages):
+- Topic with subtopics: "What services do they offer?" → Load homepage + service pages
+- Comparison: "Compare procedure A vs B" → Load both procedure pages
+- Multi-faceted: "What are the financing options?" → Load financing + service pages
+
+**Deep research** (7+ pages, iterative):
+- Analytical: "What are all the CTAs?" → Load multiple page types
+- Pattern extraction: "Analyze messaging" → Load representative pages from each category
+- Comprehensive: "What are the main value propositions?" → Load homepage, services, about
+
+**Decision process:**
+1. Count relevant candidates from Step 3
+2. Assess query complexity (simple fact vs. analytical pattern)
+3. Start conservative: Load 2-5 most relevant pages first
+4. Evaluate: Can you answer with loaded pages?
+5. Expand if needed: Load additional pages if incomplete
+6. For analytical queries: See "Advanced Workflows" below
+
+Load only selected files using full paths from Step 2/3 output.
+
+## Advanced Workflows
+
+### Analytical Queries & Pattern Extraction
+
+For questions requiring cross-page analysis (e.g., "What are the CTAs?", "Analyze messaging"):
+
+**Workflow:**
+1. **Discovery**: `rg "^title:" $PAGES` and `ls $PAGES` to understand site structure
+2. **Categorize**: Group pages by type (homepage, services, blog, about, etc.)
+3. **Sample**: Load 2-3 representative pages from each category
+4. **Extract**: Identify patterns in loaded pages (CTAs, messaging, themes)
+5. **Expand**: Load more pages if patterns are incomplete
+6. **Synthesize**: Combine findings across all loaded pages
+
+**Pattern extraction commands:**
+
+**CTAs:**
+```bash
+rg -i "\[.*\]\(.*\)" $PAGES  # Markdown links
+rg -i "call.*action|cta|click here|get started|learn more|contact us|book now|schedule|request|sign up" $PAGES
+```
+
+**Value Propositions:**
+```bash
+rg -i "why choose|benefits|advantages|features|what makes us|unique|different" $PAGES
+```
+
+**Contact Information:**
+```bash
+rg -i "phone|email|address|contact|reach|location" $PAGES
+```
+
+**Pricing:**
+```bash
+rg -i "\$|price|cost|fee|pricing|rates" $PAGES
+```
+
+**Example: Finding CTAs**
+1. Search: `rg -l -i "get started|contact|book|schedule" $PAGES`
+2. Preview: `rg -l -i "..." $PAGES | xargs head -n 12`
+3. Identify page types with CTAs
+4. Load 2-3 pages from each type
+5. Extract CTA text from markdown (`[text](url)` patterns)
+6. Analyze context and rank by value
+7. Synthesize top results across all pages
+
+## Page Structure Reference
 
 Every file in `pages/` has:
 
@@ -109,28 +223,16 @@ summary: |
 # Full markdown content...
 ```
 
-## Discovery Commands
+## Quick Reference
 
-When you need to understand what's on the site before searching:
+**Essential commands:**
+- `rg -l "pattern" $PAGES` → Find filenames
+- `rg -l "pattern" $PAGES | xargs head -n 12` → Preview frontmatter
+- `rg "^title:" $PAGES` → List all page titles
+- `rg -l "A" $PAGES | xargs rg -l "B"` → Narrow search (pipe pattern)
 
-```bash
-# List all page titles
-rg "^title:" $PAGES
-
-# List all pages (filenames hint at content)
-ls $PAGES
-
-# Count pages
-ls $PAGES | wc -l
-```
-
-## Tips
-
-- **Resolve the path first.** `$PAGES` = the `pages/` directory next to this file.
-- **Always expand keywords first.** Never search with just one term.
-- **Discover first if unsure.** Run `rg "^title:" $PAGES` to see what exists.
-- **Use the pipe pattern** to intersect: `rg -l "A" $PAGES | xargs rg -l "B"`
-- **Frontmatter is the search surface.** Summaries are keyword-rich. A hit
-  in the summary is a stronger relevance signal than a hit in the body.
-- **Read before loading.** Check frontmatter (`head -n 12`) when you have
-  more than 5 candidates.
+**Key principles:**
+- Use `rg` (ripgrep) for all searches
+- Reason over ALL frontmatter fields (title, description, URL, filename, summary)
+- Start conservative with page count, expand if needed
+- For analytical queries, use multi-page workflow: discover → categorize → sample → extract → expand → synthesize

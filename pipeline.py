@@ -326,17 +326,25 @@ POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
 
 # JSON extraction prompt -- tells Firecrawl's LLM what we want (see plan.md D3)
+# Optimized for hybrid keyword (ripgrep) + semantic (agent reasoning) search
 JSON_PROMPT = (
     "Extract structured metadata from this web page. This metadata will serve "
-    "as frontmatter in a reference file that AI agents search through to find "
-    "relevant pages. The summary field is critical -- it must describe WHAT "
-    "INFORMATION IS ON THIS PAGE, like a card catalog entry. Do not repeat "
-    "the page content. Instead, tell the reader what they would find if they "
-    "loaded the full page: what topics are covered, what questions are answered, "
-    "what data points are available (e.g. pricing, recovery timelines, "
-    "before-and-after photos, credentials, FAQs). An AI agent reading only "
-    "the summary should be able to decide whether this page is relevant to "
-    "their current task."
+    "as frontmatter in a reference file that AI agents search through using "
+    "ripgrep (literal keyword matching) to find relevant pages.\n\n"
+    "The summary field is critical for search quality. It must:\n"
+    "1. Describe WHAT INFORMATION IS ON THIS PAGE (content manifest, not recap)\n"
+    "2. Be keyword-rich with multiple term variations for ripgrep matching\n"
+    "3. Include synonyms, formal/informal terms, and related concepts\n"
+    "4. Mention specific searchable terms users might use\n\n"
+    "For example, if a page covers 'pricing', the summary should mention "
+    "'pricing', 'price', 'cost', 'fees', 'rates', 'how much', 'payment' "
+    "so searches for any of these terms will match.\n\n"
+    "If a page covers 'rhinoplasty', mention both 'rhinoplasty' and 'nose job'. "
+    "If a page covers 'contact', mention 'contact', 'reach', 'phone', 'email', "
+    "'address', 'get in touch', 'location'.\n\n"
+    "Use 3-5 sentences. Be specific about topics, data points, and unique "
+    "content. An AI agent reading only the summary should be able to decide "
+    "whether this page is relevant to their search query."
 )
 
 JSON_SCHEMA = {
@@ -353,11 +361,14 @@ JSON_SCHEMA = {
         "summary": {
             "type": "string",
             "description": (
-                "A 3-5 sentence content manifest. Describe what information "
-                "this page contains as if answering: 'If I loaded this page, "
-                "what would I find?' Mention specific topics covered, data "
-                "available, and any unique content. This helps an AI agent "
-                "decide whether to load the full page."
+                "A 3-5 sentence content manifest optimized for keyword search. "
+                "Describe what information this page contains, using multiple "
+                "term variations (synonyms, formal/informal, related concepts) "
+                "so ripgrep searches will match. For example, mention 'pricing' "
+                "AND 'cost' AND 'fees', 'contact' AND 'phone' AND 'email', "
+                "'procedure' AND 'treatment' AND 'service'. Include specific "
+                "topics, data points, and unique content. This enables both "
+                "keyword matching (ripgrep) and semantic understanding (agent reasoning)."
             ),
         },
     },
@@ -967,6 +978,158 @@ def assemble_pages(pages: list[dict], pages_dir: str) -> int:
     return count
 
 
+def extract_site_description(
+    pages: list[dict],
+    domain: str,
+    manual_description: str | None = None,
+) -> str:
+    """Extract site description with multi-tier fallback.
+    
+    Priority order:
+    1. Manual override (if provided)
+    2. Homepage metadata (json.description, metadata.description, ogDescription)
+    3. Infer from page titles (simple pattern matching)
+    4. Generic fallback
+    
+    Args:
+        pages: List of scraped page dictionaries
+        domain: Website domain
+        manual_description: Optional manual description override
+        
+    Returns:
+        Site description string
+    """
+    # Tier 1: Manual override (highest priority)
+    if manual_description and manual_description.strip():
+        return manual_description.strip()
+    
+    # Tier 2: Extract from homepage metadata
+    homepage_url = f"https://{domain}"
+    homepage_url_alt = f"http://{domain}"
+    
+    homepage = None
+    for page in pages:
+        metadata = page.get("metadata", {})
+        source_url = (
+            metadata.get("ogUrl", "") or metadata.get("sourceURL", "")
+        ).rstrip("/")
+        
+        if source_url in (homepage_url.rstrip("/"), homepage_url_alt.rstrip("/")):
+            homepage = page
+            break
+    
+    if homepage:
+        json_data = homepage.get("json", {})
+        metadata = homepage.get("metadata", {})
+        
+        # Priority: json.description > condensed json.summary > metadata.description > ogDescription
+        # json.description is LLM-extracted 1-2 sentences (already perfect length)
+        if json_data.get("description"):
+            desc = json_data["description"].strip()
+            if desc and len(desc) > 20:  # Minimum length check
+                return desc
+        
+        # json.summary is LLM-extracted 3-5 sentences (very rich, condense to 1-2 sentences)
+        # Note: Summary describes PAGE CONTENT, not business identity, but contains business info
+        if json_data.get("summary"):
+            summary = json_data["summary"].strip()
+            if summary and len(summary) > 50:
+                # Extract business identity from summary (remove page-focused language)
+                sentences = [s.strip() for s in summary.split(". ") if s.strip()]
+                
+                # Filter out page-structure sentences, keep business-focused ones
+                business_sentences = []
+                for sentence in sentences:
+                    # Skip sentences about page structure/navigation
+                    if any(phrase in sentence.lower() for phrase in [
+                        "this page", "the page", "additional resources", "includes links",
+                        "provides links", "contains links", "links to", "page also"
+                    ]):
+                        continue
+                    business_sentences.append(sentence)
+                
+                # If no business sentences after filtering, use original sentences
+                if not business_sentences:
+                    business_sentences = sentences
+                
+                # Build condensed description from complete sentences (max 250 chars)
+                condensed_parts = []
+                current_length = 0
+                max_length = 250
+                
+                for sentence in business_sentences[:3]:  # Max 3 sentences
+                    # Add period if not last sentence
+                    sentence_with_period = sentence + "."
+                    potential_length = current_length + len(sentence_with_period)
+                    if len(condensed_parts) > 0:
+                        potential_length += 1  # +1 for space between sentences
+                    
+                    if potential_length <= max_length:
+                        condensed_parts.append(sentence_with_period)
+                        current_length = potential_length
+                    else:
+                        break
+                
+                if condensed_parts:
+                    condensed = " ".join(condensed_parts)
+                    # Ensure we don't exceed limit (safety check)
+                    if len(condensed) > max_length:
+                        # Truncate at last complete sentence
+                        if len(condensed_parts) > 1:
+                            condensed = " ".join(condensed_parts[:-1])
+                        else:
+                            # Single sentence too long - truncate at word boundary
+                            words = condensed_parts[0].split()
+                            truncated = []
+                            for word in words:
+                                if len(" ".join(truncated + [word])) <= max_length - 3:
+                                    truncated.append(word)
+                                else:
+                                    break
+                            condensed = " ".join(truncated) + "..."
+                    return condensed
+        
+        if metadata.get("description"):
+            desc = metadata["description"].strip()
+            if desc and len(desc) > 20:
+                return desc
+        
+        if metadata.get("ogDescription"):
+            desc = metadata["ogDescription"].strip()
+            if desc and len(desc) > 20:
+                return desc
+    
+    # Tier 3: Infer from page titles
+    titles = []
+    for page in pages[:20]:  # First 20 pages
+        json_data = page.get("json", {})
+        metadata = page.get("metadata", {})
+        title = json_data.get("title") or metadata.get("title", "")
+        if title:
+            titles.append(title.lower())
+    
+    # Simple pattern matching
+    all_titles = " ".join(titles)
+    
+    if any(term in all_titles for term in ["api", "reference", "documentation", "docs", "guide"]):
+        return "API documentation and developer resources"
+    
+    if any(term in all_titles for term in ["service", "treatment", "procedure", "services"]):
+        return "Service-based business"
+    
+    if any(term in all_titles for term in ["doctor", "surgeon", "clinic", "medical", "healthcare", "patient"]):
+        return "Medical practice or healthcare provider"
+    
+    if any(term in all_titles for term in ["product", "feature", "saas", "platform", "software"]):
+        return "Product or SaaS platform"
+    
+    if any(term in all_titles for term in ["portfolio", "work", "projects", "agency", "design"]):
+        return "Creative agency or service provider"
+    
+    # Tier 4: Generic fallback
+    return f"a website at {domain}"
+
+
 def generate_skill_md(
     output_dir: str,
     domain: str,
@@ -1156,8 +1319,16 @@ def main():
     page_count = assemble_pages(pages, pages_dir)
     print(f"  Wrote {page_count} page files to {pages_dir}/")
 
+    # Extract site description with auto-extraction fallback
+    site_description = extract_site_description(
+        pages,
+        config.domain,
+        config.description if config.description else None,
+    )
+    print(f"  Site description: {site_description}")
+
     generate_skill_md(
-        config.output, config.domain, config.skill_name, config.description
+        config.output, config.domain, config.skill_name, site_description
     )
     print(f"  Wrote SKILL.md")
 
