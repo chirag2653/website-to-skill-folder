@@ -68,28 +68,59 @@ class PipelineInput(BaseModel):
     @field_validator("url")
     @classmethod
     def normalize_url(cls, v: str) -> str:
-        """Accept any URL-like input and normalize to https://domain."""
+        """Accept any URL-like input and normalize to https://domain.
+
+        Handles real-world input from UI text fields:
+        - Strips whitespace, newlines, tabs
+        - Strips trailing punctuation (periods, commas)
+        - Adds https:// if no scheme (bare domain input)
+        - Accepts any scheme (http, ftp, etc.) — always uses https
+        - Rejects multi-word input (natural language)
+        - Rejects strings without a valid TLD
+        """
         v = v.strip()
         if not v:
-            raise ValueError("URL cannot be empty. Pass a website URL like: https://example.com")
+            raise ValueError(
+                "URL cannot be empty.\n"
+                "Pass a website URL or domain, e.g.: https://example.com or example.com"
+            )
 
-        # Add scheme if missing (bare domain like "csaok.com")
-        if not v.startswith(("http://", "https://")):
+        # Reject multi-word input (natural language, not a URL)
+        # URLs never have unencoded spaces in the domain portion
+        if " " in v.split("//")[-1].split("/")[0]:
+            raise ValueError(
+                f"'{v}' looks like text, not a URL.\n"
+                f"Pass just the website URL or domain, e.g.: example.com"
+            )
+
+        # Strip trailing punctuation (copy-paste artifacts)
+        v = v.rstrip(".,;:!? ")
+
+        # Normalize scheme — accept any, always use https
+        if "://" in v:
+            # Replace any scheme with https
+            v = "https://" + v.split("://", 1)[1]
+        elif not v.startswith(("http://", "https://")):
             v = f"https://{v}"
 
         parsed = urlparse(v)
         if not parsed.netloc:
             raise ValueError(
-                f"Could not parse domain from '{v}'.\n"
-                f"Expected a URL like: https://example.com or just: example.com"
+                f"Could not parse a domain from '{v}'.\n"
+                f"Expected: https://example.com, example.com, or docs.stripe.com"
             )
 
-        # Reject obvious non-website inputs
-        if "." not in parsed.netloc:
+        # Validate the domain has a TLD (at least one dot)
+        netloc_clean = parsed.netloc.split(":")[0]  # strip port for check
+        if "." not in netloc_clean:
             raise ValueError(
-                f"'{parsed.netloc}' doesn't look like a domain.\n"
+                f"'{netloc_clean}' is not a valid domain (no TLD).\n"
                 f"Expected something like: example.com, docs.stripe.com"
             )
+
+        # Strip trailing dot from domain (DNS root, copy-paste artifact)
+        if parsed.netloc.endswith("."):
+            v = v.replace(parsed.netloc, parsed.netloc.rstrip("."), 1)
 
         return v
 
@@ -115,6 +146,9 @@ class PipelineInput(BaseModel):
         if ":" in netloc:
             netloc = netloc.split(":")[0]
 
+        # Strip trailing dot (DNS root notation artifact)
+        netloc = netloc.rstrip(".")
+
         self.domain = netloc
         self.map_url = f"https://{self.domain}"
 
@@ -133,14 +167,28 @@ def parse_args() -> PipelineInput:
             "Examples:\n"
             "  python pipeline.py https://csaok.com\n"
             "  python pipeline.py csaok.com\n"
-            "  python pipeline.py https://docs.stripe.com --limit 100\n"
+            "  python pipeline.py docs.stripe.com --limit 100\n"
             "  python pipeline.py csaok.com --skip-scrape\n"
+            "\n"
+            "Subdomain handling:\n"
+            "  Domains and subdomains are treated as SEPARATE websites.\n"
+            "  example.com and blog.example.com produce two different skill folders.\n"
+            "  www. is the only prefix that gets stripped (it's cosmetic, not a real subdomain).\n"
+            "\n"
+            "  example.com          -> skill: example.com\n"
+            "  www.example.com      -> skill: example.com (www. stripped)\n"
+            "  blog.example.com     -> skill: blog.example.com (separate website)\n"
+            "  docs.stripe.com      -> skill: docs.stripe.com (separate website)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "url",
-        help="Website URL or domain (e.g. https://example.com or example.com)",
+        help=(
+            "Website URL or domain. Accepts any format: "
+            "https://example.com, example.com, or a full page URL. "
+            "The domain is extracted and used as the skill name."
+        ),
     )
     parser.add_argument(
         "--description",
