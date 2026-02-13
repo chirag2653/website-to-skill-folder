@@ -40,6 +40,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -342,6 +343,9 @@ JSON_PROMPT = (
     "Extract structured metadata from this web page. This metadata will serve "
     "as frontmatter in a reference file that AI agents search through using "
     "ripgrep (literal keyword matching) to find relevant pages.\n\n"
+    "IMPORTANT: Return ONLY plain text. Do NOT include any HTML tags, markdown "
+    "syntax, or formatting codes in your extracted values. Convert HTML tags "
+    "like <br> to spaces or newlines as appropriate.\n\n"
     "The summary field is critical for search quality. It must:\n"
     "1. Describe WHAT INFORMATION IS ON THIS PAGE (content manifest, not recap)\n"
     "2. Be keyword-rich with multiple term variations for ripgrep matching\n"
@@ -363,11 +367,11 @@ JSON_SCHEMA = {
     "properties": {
         "title": {
             "type": "string",
-            "description": "The page title, clean and concise (without the site name suffix)",
+            "description": "The page title, clean and concise (without the site name suffix). Plain text only - no HTML tags or markdown.",
         },
         "description": {
             "type": "string",
-            "description": "A concise 1-2 sentence description of what this page is",
+            "description": "A concise 1-2 sentence description of what this page is. Plain text only - no HTML tags or markdown.",
         },
         "summary": {
             "type": "string",
@@ -379,7 +383,8 @@ JSON_SCHEMA = {
                 "AND 'cost' AND 'fees', 'contact' AND 'phone' AND 'email', "
                 "'procedure' AND 'treatment' AND 'service'. Include specific "
                 "topics, data points, and unique content. This enables both "
-                "keyword matching (ripgrep) and semantic understanding (agent reasoning)."
+                "keyword matching (ripgrep) and semantic understanding (agent reasoning). "
+                "Plain text only - no HTML tags or markdown syntax."
             ),
         },
     },
@@ -393,19 +398,60 @@ JSON_SCHEMA = {
 
 
 def get_api_key() -> str:
-    """Read Firecrawl API key from the CLI credentials file."""
-    if not os.path.exists(CREDS_PATH):
-        print(f"ERROR: Firecrawl credentials not found at {CREDS_PATH}")
-        print("Run `firecrawl login` first.")
-        sys.exit(1)
-    with open(CREDS_PATH) as f:
-        creds = json.load(f)
-    key = creds.get("apiKey") or creds.get("api_key") or creds.get("key")
-    if not key:
-        print(f"ERROR: No API key found in {CREDS_PATH}")
-        print(f"Keys present: {list(creds.keys())}")
-        sys.exit(1)
-    return key
+    """Read Firecrawl API key with multi-source fallback.
+    
+    Priority order:
+    1. FIRECRAWL_API_KEY environment variable
+    2. .env.local file in project root
+    3. Firecrawl CLI credentials file (for compatibility)
+    
+    Returns:
+        API key string
+        
+    Raises:
+        SystemExit if no key found
+    """
+    # Priority 1: Environment variable
+    api_key = os.environ.get("FIRECRAWL_API_KEY")
+    if api_key and api_key.strip():
+        return api_key.strip()
+    
+    # Priority 2: .env.local file in project root
+    script_dir = Path(__file__).parent
+    env_local_path = script_dir / ".env.local"
+    if env_local_path.exists():
+        try:
+            with open(env_local_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        if "=" in line:
+                            key, value = line.split("=", 1)
+                            key = key.strip()
+                            value = value.strip().strip('"').strip("'")
+                            if key == "FIRECRAWL_API_KEY" and value:
+                                return value
+        except (OSError, ValueError) as e:
+            logger.warning(f"Could not read .env.local: {e}")
+    
+    # Priority 3: Firecrawl CLI credentials file (fallback for compatibility)
+    if os.path.exists(CREDS_PATH):
+        try:
+            with open(CREDS_PATH, encoding="utf-8") as f:
+                creds = json.load(f)
+            key = creds.get("apiKey") or creds.get("api_key") or creds.get("key")
+            if key and key.strip():
+                return key.strip()
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not read CLI credentials: {e}")
+    
+    # No key found
+    print("ERROR: Firecrawl API key not found.")
+    print("\nPlease provide the API key using one of these methods:")
+    print("  1. Set environment variable: FIRECRAWL_API_KEY=your_key")
+    print(f"  2. Create .env.local file with: FIRECRAWL_API_KEY=your_key")
+    print(f"  3. Run `firecrawl login` (stores key at {CREDS_PATH})")
+    sys.exit(1)
 
 
 def domain_to_skill_name(domain: str) -> str:
@@ -435,22 +481,62 @@ def yaml_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def strip_html_tags(text: str) -> str:
+    """Remove HTML tags from text, converting <br> tags to spaces.
+    
+    LLM JSON extraction may include HTML tags from source content.
+    This cleans them up for clean markdown frontmatter.
+    """
+    if not text:
+        return text
+    
+    # Convert <br> and <br/> to spaces (preserve word boundaries)
+    text = re.sub(r'<br\s*/?>', ' ', text, flags=re.IGNORECASE)
+    
+    # Remove all other HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+
 def clean_markdown(md: str) -> str:
-    """Strip leading junk lines (see plan.md D8)."""
+    """Minimal cleanup - strips leading empty lines and obvious technical artifacts.
+    
+    Relies on Firecrawl's onlyMainContent and excludeTags for content quality.
+    Only removes obvious technical artifacts (icon class names, SVG references)
+    that are clearly not content. Let the AI agent use judgment for navigation
+    elements (see SKILL.md guidance).
+    """
     lines = md.split("\n")
-    for i, line in enumerate(lines):
+    cleaned_lines = []
+    
+    for line in lines:
         stripped = line.strip()
-        if stripped.startswith("#"):
-            return "\n".join(lines[i:])
-        if stripped.startswith("[Back"):
+        
+        # Skip empty lines at the start
+        if not stripped and not cleaned_lines:
             continue
-        if stripped.startswith("Consult Now"):
+        
+        # Skip obvious technical artifacts: long concatenated class names (icon fonts, SVG classes)
+        # Pattern: Multiple words connected by dashes/underscores, no spaces, very long
+        # This catches things like "Book-Open-1--Streamline-UltimatesvgCheck-Circle..."
+        if (
+            len(stripped) > 100 
+            and not " " in stripped 
+            and (stripped.count("-") > 10 or stripped.count("_") > 10)
+            and any(char.isupper() for char in stripped)  # Has capital letters (class name pattern)
+        ):
             continue
-        if stripped.startswith("Filter"):
-            continue
-        if len(stripped) > 80 and " " in stripped and not stripped.startswith("!"):
-            return "\n".join(lines[i:])
-    return md
+        
+        cleaned_lines.append(line)
+    
+    result = "\n".join(cleaned_lines)
+    
+    # Remove leading/trailing whitespace
+    return result.strip()
 
 
 def wrap_summary(summary: str, indent: int = 2, width: int = 80) -> str:
@@ -745,6 +831,21 @@ def _batch_submit_api_call(urls: list[str], api_key: str) -> dict:
             },
         ],
         "onlyMainContent": True,
+        "excludeTags": [
+            "nav",
+            "aside",
+            "header",
+            "footer",
+            "sidebar",
+            "menu",
+            "navigation",
+            "filter",
+            "widget",
+            "widget-area",
+            "sidebar-widget",
+        ],
+        "removeBase64Images": True,
+        "blockAds": True,
     }
 
     resp = requests.post(
@@ -965,13 +1066,24 @@ def assemble_pages(pages: list[dict], pages_dir: str) -> int:
             continue
 
         source_url = metadata.get("ogUrl") or metadata.get("sourceURL", "")
-        title = json_data.get("title", metadata.get("title", "Untitled"))
-        description = json_data.get("description", "")
+        # Prioritize SEO meta tags over LLM extraction (SEO team's work is authoritative)
+        title = metadata.get("title") or json_data.get("title", "Untitled")
+        description = metadata.get("description") or metadata.get("ogDescription") or json_data.get("description", "")
         summary = json_data.get("summary", "")
+        
+        # Clean HTML tags from LLM-extracted fields (may contain <br> tags from source HTML)
+        if not metadata.get("title"):  # Only clean if from LLM extraction
+            title = strip_html_tags(title)
+        if not metadata.get("description") and not metadata.get("ogDescription"):  # Only clean if from LLM extraction
+            description = strip_html_tags(description)
+        summary = strip_html_tags(summary)  # Summary is always LLM-extracted
 
         slug = url_to_slug(source_url)
         filepath = os.path.join(pages_dir, f"{slug}.md")
 
+        # Convert <br> tags to newlines in markdown (Firecrawl may preserve some HTML)
+        markdown = re.sub(r'<br\s*/?>', '\n', markdown, flags=re.IGNORECASE)
+        
         clean_md = clean_markdown(markdown)
 
         with open(filepath, "w", encoding="utf-8") as f:

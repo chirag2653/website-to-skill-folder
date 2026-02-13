@@ -54,6 +54,7 @@ Query
   → Step 3: rg -l "..." $PAGES | xargs head -n 12   → frontmatter preview
   → Step 4: Reason over ALL frontmatter fields to select pages
   → Step 5: Load selected pages (1-3 quick, 3-7 moderate, 7+ deep research)
+  → Step 6: Extract URLs from loaded pages' frontmatter and cite sources
 ```
 
 ## Core Workflow
@@ -160,6 +161,37 @@ Shows complete frontmatter for each candidate:
 
 Load only selected files using full paths from Step 2/3 output.
 
+### Step 5 — Cite sources
+
+**CRITICAL: Always cite the pages you used to answer questions.**
+
+When you load pages to answer a query, extract the `url` field from each page's frontmatter and include them in your response.
+
+**How to extract URLs:**
+- Each loaded page has a `url` field in its YAML frontmatter (lines 1-12)
+- Extract the URL from each page you loaded and used
+- Include all URLs that contributed to your answer
+
+**Format for citations:**
+At the end of your response, add a "Sources Used" section:
+
+```
+## Sources Used
+
+- [Page Title 1](https://example.com/page1)
+- [Page Title 2](https://example.com/page2)
+- [Page Title 3](https://example.com/page3)
+```
+
+**Why cite sources:**
+- Provides credibility and transparency
+- Allows verification of answers
+- Enables readers to access original content
+- Shows which pages informed your response
+
+**Example:**
+If you loaded `pages/services--botox.md` and `pages/index.md` to answer "What is Botox pricing?", extract the URLs from their frontmatter and list them at the end of your answer.
+
 ## Advanced Workflows
 
 ### Analytical Queries & Pattern Extraction
@@ -223,6 +255,8 @@ summary: |
 # Full markdown content...
 ```
 
+**Content Quality Note**: Markdown files are scraped using Firecrawl's `onlyMainContent` and `excludeTags` options to minimize navigation elements. However, you may occasionally encounter residual navigation elements at the top of pages (e.g., "Filter by Category", "[Back to Blog]" links, breadcrumbs). Use your judgment to ignore these navigation elements when reading page content — they are not part of the actual page content and should be disregarded to avoid context pollution. Focus on the substantive headings, paragraphs, and content that follows.
+
 ## Quick Reference
 
 **Essential commands:**
@@ -236,3 +270,4 @@ summary: |
 - Reason over ALL frontmatter fields (title, description, URL, filename, summary)
 - Start conservative with page count, expand if needed
 - For analytical queries, use multi-page workflow: discover → categorize → sample → extract → expand → synthesize
+- **Always cite sources**: Extract URLs from frontmatter of loaded pages and include a "Sources Used" section at the end of your response
