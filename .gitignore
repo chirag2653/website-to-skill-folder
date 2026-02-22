@@ -1,12 +1,6 @@
-# Workspace (raw API responses, cached data)
-# Keep folder structure but ignore all contents
-_workspace/*
-!_workspace/.gitkeep
-
-# Output (generated skill folders - users generate their own)
-# Keep folder structure but ignore all contents
-output/*
-!output/.gitkeep
+# Runtime-generated — created automatically on first run, never committed
+_workspace/
+output/
 
 # Development notes (internal documentation, not for public repo)
 _dev-notes/
