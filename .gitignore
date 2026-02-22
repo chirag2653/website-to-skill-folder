@@ -8,15 +8,6 @@ _workspace/*
 output/*
 !output/.gitkeep
 
-# Skill location — same rules for output/workspace generated at runtime
-skills/website-to-skill-folder/output/*
-!skills/website-to-skill-folder/output/.gitkeep
-skills/website-to-skill-folder/_workspace/*
-!skills/website-to-skill-folder/_workspace/.gitkeep
-
-# Never commit a local API key inside the skill's scripts folder
-skills/website-to-skill-folder/scripts/.env.local
-
 # Development notes (internal documentation, not for public repo)
 _dev-notes/
 

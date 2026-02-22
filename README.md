@@ -33,30 +33,30 @@ Once installed, ask your agent: *"Create a website search skill for https://exam
    export FIRECRAWL_API_KEY="your_api_key_here"
 
    # Option 2: .env.local file (copy from example)
-   cp skills/website-to-skill-folder/scripts/.env.local.example skills/website-to-skill-folder/scripts/.env.local
-   # then edit .env.local and add your key
+   cp scripts/.env.local.example scripts/.env.local
+   # then edit scripts/.env.local and add your key
    ```
 
 ### Run
 
 ```bash
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com
+python scripts/pipeline.py https://example.com
 ```
 
 ### Options
 
 ```bash
 # With custom description
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --description "E-commerce platform"
+python scripts/pipeline.py https://example.com --description "E-commerce platform"
 
 # Limit to first 100 pages (controls cost)
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --max-pages 100
+python scripts/pipeline.py https://example.com --max-pages 100
 
 # Skip scraping, reuse cached data
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --skip-scrape
+python scripts/pipeline.py https://example.com --skip-scrape
 
 # Force full re-scrape
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --force-refresh
+python scripts/pipeline.py https://example.com --force-refresh
 ```
 
 ### Output
@@ -89,17 +89,17 @@ summary: |
 ## Folder Structure
 
 ```
-skills/website-to-skill-folder/
+website-to-skill-folder/
 ├── SKILL.md                      # Agent instructions for this pipeline skill
 ├── scripts/
 │   ├── pipeline.py               # Main pipeline script
 │   ├── skill-md.template         # Template for generated website skill SKILL.md
 │   └── .env.local.example        # API key setup reference
-├── output/                       # Generated skill folders (gitignored)
+├── output/                       # Generated skill folders (gitignored, created on first run)
 │   └── {domain}-website-search-skill/
 │       ├── SKILL.md
 │       └── pages/
-└── _workspace/                   # Cache & state per domain (gitignored)
+└── _workspace/                   # Cache & state per domain (gitignored, created on first run)
     └── {domain}/
         ├── map-urls.txt
         └── state.json
