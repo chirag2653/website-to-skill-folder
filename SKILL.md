@@ -56,16 +56,20 @@ python "$SKILL_DIR/scripts/pipeline.py" https://example.com
 
 ## Output & Install
 
-When done, the pipeline prints two install commands. Run the appropriate one:
+When done, the pipeline prints the exact install commands with the real absolute
+path — no path construction needed. Look for the lines at the end of the output:
 
-```bash
-# Claude Code only:
-npx skills add "/absolute/path/to/output/skill-folder" -g -y -a claude-code
+```
+  Install / update skill in agents:
 
-# All agents (Claude Code, Gemini CLI, Codex, Cursor, etc.):
-npx skills add "/absolute/path/to/output/skill-folder" -g -y
+    Claude Code:
+    npx skills add "/absolute/path/to/output/skill-folder" -g -y -a claude-code
+
+    All agents:
+    npx skills add "/absolute/path/to/output/skill-folder" -g -y
 ```
 
+Copy and run the appropriate command to install the produced skill into agents.
 Re-run the same command after any pipeline rerun to refresh the installed skill.
 
 ## Cost
