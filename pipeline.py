@@ -226,8 +226,10 @@ class PipelineInput(BaseModel):
 
         # Set defaults that depend on domain
         if not self.output:
-            # Use skill_name for folder name (e.g., csaok-com-website-search-skill)
-            self.output = os.path.join("output", self.skill_name)
+            # Anchor to script directory so output is always next to pipeline.py,
+            # regardless of which directory the user runs the script from.
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self.output = os.path.join(script_dir, "output", self.skill_name)
         if not self.description:
             self.description = f"a website at {self.domain}."
 
@@ -336,6 +338,7 @@ CREDS_PATH = os.path.join(
 BATCH_SIZE = 100          # URLs per batch scrape request
 POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
+REQUEST_TIMEOUT = (10, 30)  # (connect_timeout, read_timeout) in seconds
 
 # JSON extraction prompt -- tells Firecrawl's LLM what we want (see plan.md D3)
 # Optimized for hybrid keyword (ripgrep) + semantic (agent reasoning) search
@@ -686,7 +689,10 @@ def _map_website_api_call(map_url: str, api_key: str, limit: int) -> list[str]:
         "limit": limit,
     }
 
-    resp = requests.post(f"{FIRECRAWL_BASE}/v1/map", headers=headers, json=payload)
+    resp = requests.post(
+        f"{FIRECRAWL_BASE}/v1/map", headers=headers, json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
     resp.raise_for_status()
     data = resp.json()
 
@@ -849,7 +855,8 @@ def _batch_submit_api_call(urls: list[str], api_key: str) -> dict:
     }
 
     resp = requests.post(
-        f"{FIRECRAWL_BASE}/v2/batch/scrape", headers=headers, json=payload
+        f"{FIRECRAWL_BASE}/v2/batch/scrape", headers=headers, json=payload,
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -871,7 +878,8 @@ def _batch_poll_api_call(batch_id: str, api_key: str) -> dict:
     }
 
     resp = requests.get(
-        f"{FIRECRAWL_BASE}/v2/batch/scrape/{batch_id}", headers=headers
+        f"{FIRECRAWL_BASE}/v2/batch/scrape/{batch_id}", headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return resp.json()
@@ -885,7 +893,7 @@ def _batch_next_page_api_call(next_url: str, api_key: str) -> dict:
         "Content-Type": "application/json",
     }
 
-    resp = requests.get(next_url, headers=headers)
+    resp = requests.get(next_url, headers=headers, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -1294,7 +1302,8 @@ def generate_skill_md(
 def main():
     config = parse_args()
 
-    workspace_dir = os.path.join("_workspace", config.domain)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    workspace_dir = os.path.join(script_dir, "_workspace", config.domain)
 
     api_key = get_api_key()
 
@@ -1481,6 +1490,20 @@ def main():
             f"\n  Estimated cost: 1 (map) + {new_page_count} x 5 (scrape) "
             f"= {1 + new_page_count * 5} credits"
         )
+
+    # Install commands
+    # npx skills copies output/ into ~/.agents/skills/ on install.
+    # Re-run this command after every pipeline update to refresh the installed skill.
+    abs_output = os.path.abspath(config.output)
+    print(f"\n  Install / update skill in agents:")
+    print(f"    (run this after every pipeline rerun to refresh installed skill)")
+    print(f"")
+    print(f"    Claude Code:")
+    print(f'    npx skills add "{abs_output}" -g -y -a claude-code')
+    print(f"")
+    print(f"    All agents:")
+    print(f'    npx skills add "{abs_output}" -g -y')
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
