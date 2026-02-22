@@ -59,18 +59,20 @@ If missing: **stop and ask the user for their Firecrawl API key.**
 
 Tell them: "A Firecrawl API key is needed to crawl websites. Get a free key at https://firecrawl.dev — no credit card required."
 
-Once they provide it, set it for this run:
-
-```bash
-export FIRECRAWL_API_KEY="fc-their_key_here"
-```
-
-Then continue to the pipeline.
+Once they provide it, use it inline in the run command below (Step 3).
 
 ## 3. Run the Pipeline
 
+Inline both the skill path and the API key so the command is self-contained:
+
 ```bash
-python "$SKILL_DIR/scripts/pipeline.py" https://example.com
+FIRECRAWL_API_KEY="fc-their_key_here" python "$HOME/.agents/skills/website-to-skill-folder/scripts/pipeline.py" https://example.com
+```
+
+If the skill was installed to a different location (check Step 1 output), substitute that path:
+
+```bash
+FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" https://example.com
 ```
 
 **Options:**
