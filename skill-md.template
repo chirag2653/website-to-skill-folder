@@ -34,16 +34,19 @@ to search without loading pages into context.
 
 ## Path Resolution
 
-The `pages/` directory is **in the same folder as this SKILL.md file**.
-Your working directory is probably NOT this skill folder, so bare `pages/`
-paths will fail.
+**Set `$PAGES` once before running any search commands.** This skill's pages
+are always installed at a known path — no discovery step needed:
 
-**How to resolve:**
-1. Find the absolute path to this SKILL.md file
-2. Append `/pages` to that path
-3. Use that absolute path as `$PAGES` in all commands below
+```bash
+# Standard path after `npx skills add` (works for most setups):
+PAGES="$HOME/.agents/skills/{skill_name}/pages"
 
-**Example:** If SKILL.md is at `/path/to/skill/SKILL.md`, then `$PAGES = /path/to/skill/pages`
+# If that directory doesn't exist, search common skill locations:
+[ -d "$PAGES" ] || PAGES=$(find "$HOME/.agents/skills" "$HOME/.claude/skills" -maxdepth 3 -type d -name "pages" -path "*{skill_name}*" 2>/dev/null | head -1)
+```
+
+Verify before searching: `ls "$PAGES"` should list `.md` files.
+If `$PAGES` is wrong, every search silently returns zero results.
 
 ## Search Flow
 
