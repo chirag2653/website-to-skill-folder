@@ -1,41 +1,57 @@
-# Website-to-Skill Pipeline
+# website-to-skill-folder
 
-Convert any website into an AI-searchable skill folder that agents can use to answer questions about the site's content.
+**Turn any website into an installable AI agent skill — one command, fully offline search.**
 
-## How It Works
-
-The pipeline has two distinct parts with a clear boundary:
-
-**The skill (read-only tool — never written to):**
-```
-~/.agents/skills/website-to-skill-folder/
-├── SKILL.md              # Instructions for AI agents
-└── scripts/
-    ├── pipeline.py       # The pipeline script
-    ├── skill-md.template # Template used internally by the script
-    └── .env.local.example
-```
-
-**Your project folder (written to when you run the pipeline):**
-```
-your-project/             # wherever you run the script from
-├── output/               # created automatically on first run
-│   └── {domain}-website-search-skill/
-│       ├── SKILL.md      # The produced website search skill
-│       └── pages/        # One .md file per scraped page
-└── _workspace/           # created automatically on first run
-    └── {domain}/         # per-domain cache and run state
-        ├── map-urls.txt
-        └── state.json
-```
-
-The script and its internal files live in the skill folder. Everything it produces — output skills and the workspace cache that enables incremental updates and resumability — lands in your current working directory. Nothing is ever written back to the skill folder.
+Point it at a URL. It crawls the site, packages every page as searchable markdown, and hands you a ready-to-install skill folder. Run the printed `npx skills add` command and your AI agents (Claude Code, Gemini CLI, Cursor, Codex, and more) can answer questions about that website — no live browsing, no API calls at query time.
 
 ---
 
-## Install as an AI Agent Skill (Recommended)
+## The Two-Step Flow
 
-Install into your AI agents via [npx skills](https://github.com/vercel-labs/skills):
+### Step 1 — Run the pipeline on any website URL
+
+```bash
+python scripts/pipeline.py https://docs.example.com
+```
+
+The pipeline maps the site, scrapes every page, and builds a skill folder in `output/`:
+
+```
+output/
+└── docs.example.com-website-search-skill/
+    ├── SKILL.md       # Agent instructions + keyword index
+    └── pages/         # One .md file per scraped page
+```
+
+At the end it prints the exact install command:
+
+```
+  Install / update skill in agents:
+
+    Claude Code:
+    npx skills add "/path/to/output/docs.example.com-website-search-skill" -g -y -a claude-code
+
+    All agents:
+    npx skills add "/path/to/output/docs.example.com-website-search-skill" -g -y
+```
+
+### Step 2 — Install the skill
+
+Copy and run the printed command. The website search skill is now live in your agents. Ask anything about the site:
+
+> *"What are the authentication options?"*
+> *"How do I configure webhooks?"*
+> *"What changed in the latest release?"*
+
+The agent searches the skill folder offline — fast, accurate, and with source citations back to the original page URLs.
+
+Re-run the pipeline any time to pick up new pages. Re-run the `npx skills add` command to push the update to your agents.
+
+---
+
+## Install This Tool as an Agent Skill
+
+The pipeline itself is packaged as an agent skill. Install it once and ask your agent to run it for you:
 
 ```bash
 # All agents (Claude Code, Gemini CLI, Codex, Cursor, etc.):
@@ -45,32 +61,31 @@ npx skills add chirag2653/website-to-skill-folder -g -y
 npx skills add chirag2653/website-to-skill-folder -g -y -a claude-code
 ```
 
-Then ask your agent from any project folder:
+Then from any project folder, just ask:
+
 > *"Create a website search skill for https://example.com"*
 
-The agent runs the pipeline, and output lands in `output/` inside your current project folder. At the end it prints the exact `npx skills add` command to install the produced skill — run it and the website search skill is available in all your agents.
+The agent runs the pipeline, builds the skill folder in `output/`, and prints the install command — you run it, the website skill is installed.
 
 ---
 
-## Manual Usage
+## Manual Setup
 
-Clone the repo, then run from the repo root:
+### Prerequisites
 
-### Setup
+1. **Firecrawl API key** — get one free at [firecrawl.dev](https://firecrawl.dev) (used to map and scrape the site)
 
-1. **Get a Firecrawl API key** from [firecrawl.dev](https://firecrawl.dev)
-
-2. **Install Python dependencies:**
+2. **Python dependencies:**
    ```bash
    pip install requests pydantic tenacity
    ```
 
 3. **Set your API key** (choose one):
    ```bash
-   # Option 1: environment variable
-   export FIRECRAWL_API_KEY="your_api_key_here"
+   # Option A: environment variable
+   export FIRECRAWL_API_KEY="fc-your_key_here"
 
-   # Option 2: .env.local file next to the script
+   # Option B: .env.local file next to the script
    cp scripts/.env.local.example scripts/.env.local
    # edit scripts/.env.local and add your key
    ```
@@ -81,26 +96,23 @@ Clone the repo, then run from the repo root:
 python scripts/pipeline.py https://example.com
 ```
 
-Output is created in `output/` inside the current directory. The script prints the install command at the end.
+Output lands in `output/` inside your current directory. The script prints the `npx skills add` install command at the end.
 
 ### Options
 
 | Flag | Purpose |
 |------|---------|
-| `--description "..."` | One-line site description for the generated SKILL.md |
-| `--max-pages 100` | Limit pages scraped — controls Firecrawl credit cost |
+| `--description "..."` | One-line site description added to the generated SKILL.md |
+| `--max-pages 100` | Cap pages scraped — directly controls Firecrawl credit cost |
 | `--skip-scrape` | Reassemble from cache, zero API calls |
-| `--force-refresh` | Ignore cache, re-scrape all pages |
+| `--force-refresh` | Ignore cache and re-scrape all pages |
 
 ---
 
-## Pipeline Steps
+## What Gets Produced
 
-1. **Map** — Discovers all URLs on the website via Firecrawl Map API (1 credit)
-2. **Scrape** — Batch scrapes each page as markdown + extracts AI metadata (~5 credits/page)
-3. **Assemble** — Builds the skill folder: `SKILL.md` + one `pages/*.md` per page
+Each scraped page becomes a `.md` file with YAML frontmatter optimised for fast `grep`/`ripgrep` search:
 
-Each page file gets YAML frontmatter for fast ripgrep search:
 ```yaml
 ---
 title: "Page Title"
@@ -111,26 +123,57 @@ summary: |
 ---
 ```
 
----
-
-## Cost
-
-- **Map:** 1 Firecrawl credit per run
-- **Scrape:** ~5 credits per page
-- **Example:** 100-page site = 1 + (100 × 5) = **501 credits**
-
-Subsequent runs on the same site only scrape new or changed pages — incremental updates cost far less.
+The top-level `SKILL.md` indexes the whole site so agents know what's available before searching individual pages.
 
 ---
 
 ## Features
 
-- ✅ **Incremental updates** — Only scrapes new/changed pages on re-runs
-- ✅ **Resumable** — Saves progress, resumes from where it stopped if interrupted
-- ✅ **Robust deletion** — Orphaned pages removed only after 3 consecutive map misses
-- ✅ **SEO-aware** — Prioritises meta tags over LLM extraction for title/description
-- ✅ **Source citations** — Generated skills automatically cite page URLs
-- ✅ **Multi-domain** — Each domain gets its own isolated output and workspace
+- **Incremental updates** — Only re-scrapes new or changed pages on subsequent runs
+- **Resumable** — Saves progress to `_workspace/`; picks up exactly where it stopped if interrupted
+- **Robust deletion** — Orphaned pages are removed only after 3 consecutive map misses (not on a single transient failure)
+- **SEO-aware extraction** — Prefers `<meta>` tags over LLM extraction for title and description
+- **Source citations** — Every answer the agent gives includes a link back to the original page URL
+- **Multi-domain** — Each domain gets its own isolated output folder and workspace cache
+
+---
+
+## Cost
+
+Powered by [Firecrawl](https://firecrawl.dev):
+
+| Operation | Credits |
+|-----------|---------|
+| Map (per run) | 1 |
+| Scrape (per page) | ~5 |
+| 100-page site | ~501 total |
+
+Incremental re-runs only pay for new or changed pages — far cheaper after the first run.
+
+---
+
+## How the Folders Are Owned
+
+```
+~/.agents/skills/website-to-skill-folder/   ← this tool (read-only, never written to)
+├── SKILL.md
+└── scripts/
+    ├── pipeline.py
+    ├── skill-md.template
+    └── .env.local.example
+
+your-project/                               ← your data (created automatically on first run)
+├── output/
+│   └── {domain}-website-search-skill/
+│       ├── SKILL.md
+│       └── pages/
+└── _workspace/
+    └── {domain}/
+        ├── map-urls.txt
+        └── state.json
+```
+
+The tool lives in the skill folder. Everything it produces — the website search skill and the workspace cache — lands in your current working directory. Nothing is ever written back to the tool's own folder.
 
 ---
 
