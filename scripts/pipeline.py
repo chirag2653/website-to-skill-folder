@@ -226,9 +226,9 @@ class PipelineInput(BaseModel):
 
         # Set defaults that depend on domain
         if not self.output:
-            # Use _get_base_dir() so output lands at the skill root when running
-            # from inside a scripts/ subfolder, or next to the script otherwise.
-            self.output = os.path.join(_get_base_dir(), "output", self.skill_name)
+            # Output goes to the current working directory — wherever the user
+            # or agent is running the script from, not inside the script itself.
+            self.output = os.path.join(os.getcwd(), "output", self.skill_name)
         if not self.description:
             self.description = f"a website at {self.domain}."
 
@@ -399,21 +399,6 @@ JSON_SCHEMA = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _get_base_dir() -> str:
-    """Return the base directory for output/ and _workspace/.
-
-    When pipeline.py lives inside a scripts/ subfolder (skill installation via
-    npx skills), output and workspace go to the parent directory so they sit at
-    the skill root rather than buried inside scripts/.
-
-    When running the script directly from its own directory (development / manual
-    usage), output and workspace go next to the script as before.
-    """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    if os.path.basename(script_dir) == "scripts":
-        return os.path.dirname(script_dir)
-    return script_dir
 
 
 def get_api_key() -> str:
@@ -1378,7 +1363,7 @@ def generate_skill_md(
 def main():
     config = parse_args()
 
-    workspace_dir = os.path.join(_get_base_dir(), "_workspace", config.domain)
+    workspace_dir = os.path.join(os.getcwd(), "_workspace", config.domain)
 
     api_key = get_api_key()
 
