@@ -49,25 +49,23 @@ If `ModuleNotFoundError`: install and retry before proceeding.
 pip install requests pydantic tenacity
 ```
 
-### Firecrawl API key (one-time, persists across sessions)
-
-Check if already configured:
+### Firecrawl API key
 
 ```bash
 python -c "import os; print('set' if os.environ.get('FIRECRAWL_API_KEY') else 'missing')"
-ls "$SKILL_DIR/scripts/.env.local" 2>/dev/null && echo ".env.local found" || echo ".env.local not found"
 ```
 
-If the env var is missing **and** `.env.local` does not exist:
+If missing: **stop and ask the user for their Firecrawl API key.**
 
-1. **Stop and tell the user:** "A Firecrawl API key is needed to crawl websites. Get a free key at https://firecrawl.dev — no credit card required for the free tier."
-2. Once they provide the key, write it to the persistent config file next to the script:
+Tell them: "A Firecrawl API key is needed to crawl websites. Get a free key at https://firecrawl.dev — no credit card required."
+
+Once they provide it, set it for this run:
 
 ```bash
-echo 'FIRECRAWL_API_KEY=fc-their_key_here' > "$SKILL_DIR/scripts/.env.local"
+export FIRECRAWL_API_KEY="fc-their_key_here"
 ```
 
-This file persists across all future runs — the user only needs to do this once.
+Then continue to the pipeline.
 
 ## 3. Run the Pipeline
 
