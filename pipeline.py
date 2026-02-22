@@ -339,6 +339,7 @@ BATCH_SIZE = 100          # URLs per batch scrape request
 POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
 REQUEST_TIMEOUT = (10, 30)  # (connect_timeout, read_timeout) in seconds
+DELETION_MISS_THRESHOLD = 3  # Consecutive map misses before deleting a page file
 
 # JSON extraction prompt -- tells Firecrawl's LLM what we want (see plan.md D3)
 # Optimized for hybrid keyword (ripgrep) + semantic (agent reasoning) search
@@ -598,6 +599,66 @@ def get_batch_id(urls: list[str]) -> str:
     """
     urls_str = "\n".join(sorted(urls))
     return hashlib.sha256(urls_str.encode()).hexdigest()[:16]
+
+
+def update_deletion_candidates(
+    state: dict,
+    deleted_urls: list[str],
+    active_urls: list[str],
+) -> list[str]:
+    """Track map misses per URL and return URLs ready for deletion.
+
+    A URL must be absent from DELETION_MISS_THRESHOLD consecutive map runs
+    before its page file is actually deleted. This prevents data loss from
+    transient crawl failures, Firecrawl rate limiting, or temporary sitemap
+    omissions.
+
+    Logic:
+    - URLs in active_urls that were candidates: clear their miss count (returned)
+    - URLs in deleted_urls: increment their miss count
+    - URLs hitting threshold: returned for deletion, removed from candidates
+
+    Mutates state["deletion_candidates"] in place.
+
+    Returns:
+        List of URLs confirmed absent for DELETION_MISS_THRESHOLD runs.
+    """
+    if "deletion_candidates" not in state:
+        state["deletion_candidates"] = {}
+
+    candidates = state["deletion_candidates"]
+    active_set = set(active_urls)
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Clear candidates that returned to the map (transient miss, URL is back)
+    for url in list(candidates.keys()):
+        if url in active_set:
+            del candidates[url]
+
+    # Increment miss counts for currently-absent URLs
+    for url in deleted_urls:
+        if url in candidates:
+            candidates[url]["consecutive_misses"] += 1
+            candidates[url]["last_missing_at"] = now
+        else:
+            candidates[url] = {
+                "consecutive_misses": 1,
+                "first_missing_at": now,
+                "last_missing_at": now,
+            }
+
+    # Collect URLs that have hit the deletion threshold
+    urls_to_delete = [
+        url
+        for url, data in candidates.items()
+        if data["consecutive_misses"] >= DELETION_MISS_THRESHOLD
+    ]
+
+    # Remove threshold-hit URLs from candidates (their files will be deleted)
+    for url in urls_to_delete:
+        del candidates[url]
+
+    return urls_to_delete
 
 
 # ---------------------------------------------------------------------------
@@ -1327,6 +1388,8 @@ def main():
     os.makedirs(workspace_dir, exist_ok=True)
     os.makedirs(config.output, exist_ok=True)
 
+    urls_to_delete: list[str] = []  # URLs confirmed absent enough times to delete
+
     if config.skip_scrape:
         # ---------------------------------------------------------------
         # Idempotent mode: use cache, zero API calls
@@ -1375,14 +1438,32 @@ def main():
             force_refresh=config.force_refresh,
         )
 
-        # Save map state
+        # Save map state + update deletion candidates in one write
         state = load_state(workspace_dir)
         state["map"] = {
             "urls": map_result["urls"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": {"url": config.map_url, "limit": config.limit},
         }
+        urls_to_delete = update_deletion_candidates(
+            state,
+            map_result["deleted_urls"],
+            map_result["urls"],
+        )
         save_state(workspace_dir, state)
+
+        # Log deletion candidate status
+        pending = state.get("deletion_candidates", {})
+        if pending:
+            print(f"\n  {len(pending)} URL(s) absent from map (not yet deleted):")
+            for url, data in list(pending.items())[:5]:
+                remaining = DELETION_MISS_THRESHOLD - data["consecutive_misses"]
+                print(f"    [{data['consecutive_misses']}/{DELETION_MISS_THRESHOLD} misses] {url}")
+            if len(pending) > 5:
+                print(f"    ... and {len(pending) - 5} more")
+            print(f"    (will delete after {DELETION_MISS_THRESHOLD} consecutive misses)")
+        if urls_to_delete:
+            print(f"\n  {len(urls_to_delete)} URL(s) confirmed absent for {DELETION_MISS_THRESHOLD}+ runs -- will delete page files")
 
         # Step 2: Determine what to scrape
         if config.force_refresh:
@@ -1459,6 +1540,19 @@ def main():
     pages_dir = os.path.join(config.output, "pages")
     page_count = assemble_pages(pages, pages_dir)
     print(f"  Wrote {page_count} page files to {pages_dir}/")
+
+    # Remove page files for URLs confirmed absent for DELETION_MISS_THRESHOLD runs
+    if urls_to_delete:
+        deleted_file_count = 0
+        for url in urls_to_delete:
+            slug = url_to_slug(url)
+            filepath = os.path.join(pages_dir, f"{slug}.md")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                deleted_file_count += 1
+                logger.info(f"Deleted orphaned page: {url}")
+        if deleted_file_count:
+            print(f"  Deleted {deleted_file_count} orphaned page file(s) (confirmed absent for {DELETION_MISS_THRESHOLD}+ runs)")
 
     # Extract site description with auto-extraction fallback
     site_description = extract_site_description(
