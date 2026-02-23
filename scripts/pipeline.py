@@ -743,11 +743,16 @@ def load_existing_pages(urls: list[str], workspace_dir: str) -> list[dict]:
 
 
 @retry(**RETRY_CONFIG)
-def _map_website_api_call(map_url: str, api_key: str, limit: int) -> list[str]:
+def _map_website_api_call(
+    map_url: str, api_key: str, limit: int, ignore_cache: bool = False
+) -> list[str]:
     """Make the Map API call with automatic retries.
 
     Retries on transient failures (network, rate limit, server errors).
     Raises immediately on permanent failures (400, 401, 403, 404).
+
+    ignore_cache: pass True on --force-refresh so Firecrawl bypasses its
+    own cached sitemap data and returns a genuinely fresh URL list.
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -758,6 +763,7 @@ def _map_website_api_call(map_url: str, api_key: str, limit: int) -> list[str]:
         "includeSubdomains": False,
         "ignoreQueryParameters": True,
         "limit": limit,
+        "ignoreCache": ignore_cache,
     }
 
     resp = requests.post(
@@ -809,7 +815,7 @@ def map_website(
     # --- Force refresh: ignore cache, call API ---
     if force_refresh:
         print("  Force refresh: ignoring cache")
-        new_urls = _map_website_api_call(map_url, api_key, limit)
+        new_urls = _map_website_api_call(map_url, api_key, limit, ignore_cache=True)
         cached_urls: list[str] = []
         print(f"  Found {len(new_urls)} URLs (1 credit used)")
 
