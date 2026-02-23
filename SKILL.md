@@ -86,18 +86,37 @@ FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" ht
 
 ## 4. Install the Output Skill
 
-Output lands in `output/` inside the current working directory. At the end, the pipeline
-prints the exact install command — relay it to the user and run it:
+When the pipeline finishes, it prints the exact install command with the real absolute path
+to the skill folder it just built. It looks like this (path will differ on your machine):
 
 ```
   Install / update skill in agents:
 
     Claude Code:
-    npx skills add "/absolute/path/to/output/example-com-website-search-skill" -g -y -a claude-code
+    npx skills add "/Users/yourname/path/to/output/example-com-website-search-skill" -g -y -a claude-code
 
     All agents:
-    npx skills add "/absolute/path/to/output/example-com-website-search-skill" -g -y
+    npx skills add "/Users/yourname/path/to/output/example-com-website-search-skill" -g -y
 ```
+
+**Before running:** Show the user the command printed by the pipeline and ask:
+
+> "The skill folder is ready. Shall I install it now so your agents can search [domain] offline?"
+
+Only run the install command after the user confirms. Use the exact path from the pipeline
+output — do not use the example path shown above.
+
+### If `npx` fails
+
+`npx skills` requires Node.js. Check:
+
+```bash
+node --version 2>&1
+```
+
+If not found: tell the user "Node.js is required to install the skill. Download it from
+https://nodejs.org (LTS version) — it includes npx." Once they install it, re-run the
+install command.
 
 After installing, the user's agents can answer questions about the website offline.
 Re-run the pipeline and re-run the install command any time to pick up new pages.
