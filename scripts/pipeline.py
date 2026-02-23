@@ -339,6 +339,7 @@ POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
 REQUEST_TIMEOUT = (10, 30)  # (connect_timeout, read_timeout) in seconds
 DELETION_MISS_THRESHOLD = 3  # Consecutive map misses before deleting a page file
+MAX_SLUG_LEN = 80         # Max slug length to avoid Windows MAX_PATH (260 char) crashes
 
 # JSON extraction prompt -- tells Firecrawl's LLM what we want (see plan.md D3)
 # Optimized for hybrid keyword (ripgrep) + semantic (agent reasoning) search
@@ -471,12 +472,21 @@ def domain_to_skill_name(domain: str) -> str:
 
 
 def url_to_slug(url: str) -> str:
-    """Convert a URL path to a filesystem-safe slug (see plan.md D9)."""
+    """Convert a URL path to a filesystem-safe slug (see plan.md D9).
+
+    Truncates to MAX_SLUG_LEN chars and appends an 8-char URL hash to
+    prevent Windows MAX_PATH (260 char) crashes on long blog/doc URLs.
+    Truncated slugs remain unique because the hash is derived from the
+    full original URL.
+    """
     path = urlparse(url.rstrip("/")).path.strip("/")
     if not path:
         return "index"
     slug = path.replace("/", "--")
     slug = re.sub(r"[^a-z0-9\-]", "", slug.lower())
+    if len(slug) > MAX_SLUG_LEN:
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:8]
+        slug = slug[:MAX_SLUG_LEN] + "-" + url_hash
     return slug
 
 
