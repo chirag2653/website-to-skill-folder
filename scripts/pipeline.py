@@ -1565,6 +1565,21 @@ def main():
         if urls_to_delete:
             print(f"\n  {len(urls_to_delete)} URL(s) confirmed absent for {DELETION_MISS_THRESHOLD}+ runs -- will delete page files")
 
+        # Delete orphaned page files immediately (before approval gate,
+        # since update_deletion_candidates already removed them from state)
+        if urls_to_delete:
+            pages_dir = os.path.join(config.output, "pages")
+            deleted_file_count = 0
+            for url in urls_to_delete:
+                slug = url_to_slug(url)
+                filepath = os.path.join(pages_dir, f"{slug}.md")
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                    deleted_file_count += 1
+                    logger.info(f"Deleted orphaned page: {url}")
+            if deleted_file_count:
+                print(f"  Deleted {deleted_file_count} orphaned page file(s)")
+
         # Step 2: Determine what to scrape
         if config.force_refresh:
             # Force refresh: scrape everything
@@ -1652,19 +1667,6 @@ def main():
     pages_dir = os.path.join(config.output, "pages")
     page_count = assemble_pages(pages, pages_dir)
     print(f"  Wrote {page_count} page files to {pages_dir}/")
-
-    # Remove page files for URLs confirmed absent for DELETION_MISS_THRESHOLD runs
-    if urls_to_delete:
-        deleted_file_count = 0
-        for url in urls_to_delete:
-            slug = url_to_slug(url)
-            filepath = os.path.join(pages_dir, f"{slug}.md")
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                deleted_file_count += 1
-                logger.info(f"Deleted orphaned page: {url}")
-        if deleted_file_count:
-            print(f"  Deleted {deleted_file_count} orphaned page file(s) (confirmed absent for {DELETION_MISS_THRESHOLD}+ runs)")
 
     # Extract site description with auto-extraction fallback
     site_description = extract_site_description(
