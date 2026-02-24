@@ -130,6 +130,7 @@ class PipelineInput(BaseModel):
     max_pages: int | None = None  # Max pages to scrape (controls final skill folder size)
     skip_scrape: bool = False
     force_refresh: bool = False
+    yes: bool = False  # Auto-approve cost prompt (skip interactive confirmation)
 
     # Resolved fields (set by validators)
     domain: str = ""
@@ -302,6 +303,11 @@ def parse_args() -> PipelineInput:
         action="store_true",
         help="Ignore all cache, scrape everything from scratch",
     )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Auto-approve cost prompt and proceed without asking (for scripts/agents)",
+    )
 
     args = parser.parse_args()
 
@@ -318,6 +324,7 @@ def parse_args() -> PipelineInput:
             max_pages=args.max_pages,
             skip_scrape=args.skip_scrape,
             force_refresh=args.force_refresh,
+            yes=args.yes,
         )
     except Exception as e:
         parser.error(str(e))
@@ -1372,6 +1379,84 @@ def generate_skill_md(
 
 
 # ---------------------------------------------------------------------------
+# Cost approval
+# ---------------------------------------------------------------------------
+
+
+def prompt_cost_approval(
+    urls_to_scrape: list[str],
+    output_dir: str,
+    auto_approve: bool,
+    max_pages: int | None = None,
+) -> bool:
+    """Show estimated Firecrawl credit cost and ask user to approve.
+
+    Called after the map step (1 credit already spent) and before the
+    expensive batch scrape step.  Returns True if approved, False if
+    the user declines.
+
+    Cost model:
+      - Map:   1 credit (already spent by this point)
+      - Scrape: ~5 credits per page
+    """
+    scrape_count = len(urls_to_scrape)
+    scrape_cost = scrape_count * 5
+    total_cost = 1 + scrape_cost
+
+    # Detect new vs update by checking for existing SKILL.md
+    skill_md_path = os.path.join(output_dir, "SKILL.md")
+    is_update = os.path.exists(skill_md_path)
+    action = "Update existing" if is_update else "Create new"
+
+    print(f"\n{'='*60}")
+    print(f"COST ESTIMATE")
+    print(f"{'='*60}")
+    print(f"  Action:           {action} skill folder")
+    print(f"  Pages to scrape:  {scrape_count}")
+    if max_pages:
+        print(f"  Max pages limit:  {max_pages}")
+    print(f"")
+    print(f"  Credits already used:  1  (map)")
+    print(f"  Credits remaining:     ~{scrape_cost}  ({scrape_count} pages x 5 credits)")
+    print(f"  Total estimated cost:  ~{total_cost} credits")
+    print(f"{'='*60}")
+
+    if auto_approve:
+        print(f"  Auto-approved (--yes flag)")
+        return True
+
+    try:
+        answer = input(f"\n  Proceed with scraping? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        # Non-interactive stdin or Ctrl+C
+        print("")
+        return False
+
+    return answer in ("y", "yes")
+
+
+def print_cancelled_message(output_dir: str, domain: str) -> None:
+    """Print a descriptive message when the user declines the cost approval."""
+    print(f"\n{'='*60}")
+    print(f"PIPELINE CANCELLED")
+    print(f"{'='*60}")
+    print(f"  What happened:")
+    print(f"    - The map step completed (1 credit used)")
+    print(f"    - Discovered URLs are cached in _workspace/{domain}/")
+    print(f"    - No pages were scraped (no additional credits used)")
+    print(f"")
+    print(f"  What was NOT done:")
+    print(f"    - Pages were not scraped")
+    print(f"    - Skill folder was not created/updated at {output_dir}/")
+    print(f"")
+    print(f"  To proceed later:")
+    print(f"    - Re-run the same command and approve when prompted")
+    print(f"    - Use --yes to skip the approval prompt")
+    print(f"    - Use --max-pages N to limit scope and reduce cost")
+    print(f"{'='*60}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1524,6 +1609,18 @@ def main():
                 f"(discovered {original_count} URLs, will scrape {len(urls_to_scrape)} pages)"
             )
 
+        # Cost approval gate: ask before the expensive scrape step
+        if urls_to_scrape:
+            approved = prompt_cost_approval(
+                urls_to_scrape,
+                config.output,
+                auto_approve=config.yes,
+                max_pages=config.max_pages,
+            )
+            if not approved:
+                print_cancelled_message(config.output, config.domain)
+                sys.exit(0)
+
         # Step 2b: Batch scrape new URLs
         if urls_to_scrape:
             new_pages = batch_scrape(
@@ -1593,11 +1690,11 @@ def main():
     if config.skip_scrape:
         print(f"\n  Credits used: 0 (idempotent mode)")
     elif new_page_count == 0 and not config.force_refresh:
-        print(f"\n  Credits used: 1 (map only, no new pages)")
+        print(f"\n  Credits used: ~1 (map only, no new pages)")
     else:
         print(
-            f"\n  Estimated cost: 1 (map) + {new_page_count} x 5 (scrape) "
-            f"= {1 + new_page_count * 5} credits"
+            f"\n  Credits used: ~{1 + new_page_count * 5} "
+            f"(1 map + {new_page_count} pages x 5 scrape)"
         )
 
     # Install commands
