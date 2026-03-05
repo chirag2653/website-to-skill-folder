@@ -11,7 +11,7 @@ Point it at a URL. It crawls the site, packages every page as searchable markdow
 ### Step 1 — Run the pipeline on any website URL
 
 ```bash
-python scripts/pipeline.py https://docs.example.com
+python skills/website-to-skill-folder/scripts/pipeline.py https://docs.example.com
 ```
 
 The pipeline maps the site, scrapes every page, and builds a skill folder in `output/`:
@@ -77,7 +77,7 @@ The agent runs the pipeline, builds the skill folder in `output/`, and prints th
 
 2. **Python dependencies:**
    ```bash
-   pip install requests pydantic tenacity
+   pip install -r requirements.txt
    ```
 
 3. **Set your API key** (choose one):
@@ -86,14 +86,14 @@ The agent runs the pipeline, builds the skill folder in `output/`, and prints th
    export FIRECRAWL_API_KEY="fc-your_key_here"
 
    # Option B: .env.local file next to the script
-   cp scripts/.env.local.example scripts/.env.local
-   # edit scripts/.env.local and add your key
+   cp skills/website-to-skill-folder/scripts/.env.local.example skills/website-to-skill-folder/scripts/.env.local
+   # edit skills/website-to-skill-folder/scripts/.env.local and add your key
    ```
 
 ### Run
 
 ```bash
-python scripts/pipeline.py https://example.com
+python skills/website-to-skill-folder/scripts/pipeline.py https://example.com
 ```
 
 Output lands in `output/` inside your current directory. The script prints the `npx skills add` install command at the end.
@@ -103,7 +103,9 @@ Output lands in `output/` inside your current directory. The script prints the `
 | Flag | Purpose |
 |------|---------|
 | `--description "..."` | One-line site description added to the generated SKILL.md |
+| `--output /path/to/dir` | Output directory (default: `./output/{skill_name}`) |
 | `--max-pages 100` | Cap pages scraped — directly controls Firecrawl credit cost |
+| `--dry-run` | Map the site and show cost estimate, then exit without scraping |
 | `--skip-scrape` | Reassemble from cache, zero API calls |
 | `--force-refresh` | Ignore cache and re-scrape all pages |
 
@@ -152,6 +154,27 @@ Incremental re-runs only pay for new or changed pages — far cheaper after the 
 
 ---
 
+## Repo Structure
+
+This repo separates the **installable skill** from **dev/project files**:
+
+```
+repo root/                                    ← project scaffolding (README, dev notes, etc.)
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+└── skills/
+    └── website-to-skill-folder/              ← what `npx skills add` installs
+        ├── SKILL.md
+        └── scripts/
+            ├── pipeline.py
+            ├── skill-md.template
+            └── .env.local.example
+```
+
+`npx skills add` auto-discovers and installs only the `skills/website-to-skill-folder/` subfolder. Dev files like README.md and .gitignore are not shipped to agents.
+
 ## How the Folders Are Owned
 
 ```
@@ -181,4 +204,4 @@ The tool lives in the skill folder. Everything it produces — the website searc
 
 - Python 3.8+
 - [Firecrawl](https://firecrawl.dev) API key
-- `pip install requests pydantic tenacity`
+- `pip install -r requirements.txt`
