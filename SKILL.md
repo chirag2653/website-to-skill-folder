@@ -5,9 +5,12 @@ description: >
   and packaging them as searchable markdown with frontmatter summaries. Use when
   asked to: create a website search skill, index a website for AI agents, scrape
   a site into a searchable knowledge base, turn a website into an offline-searchable
-  skill, or make website content available to AI agents without live browsing.
-  Outputs an installable skill folder plus the exact npx command to add it to any
-  AI agent.
+  skill, make website content available to AI agents without live browsing, crawl
+  a site, download a website for AI, convert website to markdown, build a knowledge
+  base from a URL, or make a site searchable offline. Also use when the user provides
+  a URL and wants it indexed, wants offline docs from a live site, or asks to
+  "turn this website into a skill". Outputs an installable skill folder plus the
+  exact npx command to add it to any AI agent.
 ---
 
 # Website-to-Skill Pipeline
@@ -80,9 +83,28 @@ FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" ht
 | Flag | Purpose |
 |------|---------|
 | `--description "..."` | One-line site description for the generated SKILL.md |
+| `--output /path/to/dir` | Output directory (default: `./output/{skill_name}`) |
 | `--max-pages 100` | Limit pages scraped — directly controls Firecrawl credit cost |
+| `--dry-run` | Map the site and show cost estimate, then exit without scraping (1 credit for map) |
 | `--skip-scrape` | Reassemble from cache — zero API calls |
 | `--force-refresh` | Ignore cache, re-scrape all pages |
+
+## Troubleshooting & Recovery
+
+**Pipeline crashed or timed out mid-scrape?**
+Just rerun the same command. The pipeline saves progress after each batch to `_workspace/{domain}/state.json`. Completed batches are skipped automatically — you only pay for the remaining pages.
+
+**Want to rebuild the skill folder without re-scraping?**
+Use `--skip-scrape`. This reassembles from cached data with zero API calls — useful if you want to tweak `--description` or the template changed.
+
+**Pages seem stale or site was redesigned?**
+Use `--force-refresh` to ignore all cached data and re-scrape everything from scratch.
+
+**Firecrawl rate limit errors (HTTP 429)?**
+The pipeline retries automatically with exponential backoff (up to 5 attempts per request). If it still fails, wait a few minutes and rerun — cached batches won't be repeated.
+
+**"API key missing" or authentication errors?**
+Double-check the key starts with `fc-` and is set correctly. Get a free key at https://firecrawl.dev.
 
 ## 4. Install the Output Skill
 

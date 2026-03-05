@@ -130,6 +130,7 @@ class PipelineInput(BaseModel):
     max_pages: int | None = None  # Max pages to scrape (controls final skill folder size)
     skip_scrape: bool = False
     force_refresh: bool = False
+    dry_run: bool = False  # Show what would happen without scraping
     yes: bool = False  # Auto-approve cost prompt (skip interactive confirmation)
 
     # Resolved fields (set by validators)
@@ -304,6 +305,11 @@ def parse_args() -> PipelineInput:
         help="Ignore all cache, scrape everything from scratch",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Map the site and show cost estimate, but don't scrape. Uses 1 Firecrawl credit for the map step (or 0 if cache exists).",
+    )
+    parser.add_argument(
         "--yes", "-y",
         action="store_true",
         help="Auto-approve cost prompt and proceed without asking (for scripts/agents)",
@@ -314,6 +320,8 @@ def parse_args() -> PipelineInput:
     # Validate mutually exclusive flags
     if args.skip_scrape and args.force_refresh:
         parser.error("--skip-scrape and --force-refresh are mutually exclusive")
+    if args.dry_run and args.skip_scrape:
+        parser.error("--dry-run and --skip-scrape are mutually exclusive")
 
     try:
         return PipelineInput(
@@ -324,6 +332,7 @@ def parse_args() -> PipelineInput:
             max_pages=args.max_pages,
             skip_scrape=args.skip_scrape,
             force_refresh=args.force_refresh,
+            dry_run=args.dry_run,
             yes=args.yes,
         )
     except Exception as e:
@@ -370,7 +379,17 @@ JSON_PROMPT = (
     "'address', 'get in touch', 'location'.\n\n"
     "Use 3-5 sentences. Be specific about topics, data points, and unique "
     "content. An AI agent reading only the summary should be able to decide "
-    "whether this page is relevant to their search query."
+    "whether this page is relevant to their search query.\n\n"
+    "GOOD summary (content manifest, keyword-rich):\n"
+    "\"This page provides pricing and cost information for Botox treatments, "
+    "including per-unit rates, fees for different treatment areas (forehead, "
+    "crow's feet, frown lines), and financing options. Covers payment plans, "
+    "insurance considerations, and consultation costs. Mentions price ranges, "
+    "how much Botox costs, and what affects the total fee.\"\n\n"
+    "BAD summary (vague recap, no keywords):\n"
+    "\"This page talks about one of the services offered by the clinic. It has "
+    "some details about what patients can expect and information about getting "
+    "started with the process.\""
 )
 
 JSON_SCHEMA = {
@@ -464,6 +483,35 @@ def get_api_key() -> str:
     print(f"  2. Create .env.local file with: FIRECRAWL_API_KEY=your_key")
     print(f"  3. Run `firecrawl login` (stores key at {CREDS_PATH})")
     sys.exit(1)
+
+
+def validate_api_key(api_key: str) -> None:
+    """Validate the Firecrawl API key format and check auth before spending credits.
+
+    Catches bad keys early so users don't wait for a map call to fail with a 401.
+    """
+    if not api_key.startswith("fc-"):
+        logger.warning(
+            "API key doesn't start with 'fc-' — Firecrawl keys typically do. "
+            "Proceeding anyway, but if you get auth errors, double-check your key."
+        )
+
+    # Lightweight auth check: hit the /v1/scrape endpoint with an empty body.
+    # A valid key returns 422 (validation error); an invalid key returns 401.
+    try:
+        resp = requests.post(
+            f"{FIRECRAWL_BASE}/v1/scrape",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={},
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            print("ERROR: Firecrawl API key is invalid (401 Unauthorized).")
+            print("Please check your key and try again.")
+            print("Get a free key at https://firecrawl.dev")
+            sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not validate API key (network error: {e}). Proceeding anyway.")
 
 
 def domain_to_skill_name(domain: str) -> str:
@@ -1345,20 +1393,118 @@ def extract_site_description(
     return f"a website at {domain}"
 
 
+def generate_site_expansions(pages: list[dict]) -> str:
+    """Analyze page titles and summaries to generate site-specific query expansion hints.
+
+    Scans all page metadata for recurring domain-specific terms and produces
+    3-5 expansion categories tailored to this specific website. These are
+    injected into the generated SKILL.md alongside the generic expansions.
+
+    Returns a markdown-formatted string of site-specific expansion lines,
+    or an empty string if no meaningful patterns are found.
+    """
+    # Collect all titles and summaries into one searchable corpus
+    corpus_parts = []
+    for page in pages:
+        metadata = page.get("metadata", {})
+        json_data = page.get("json", {})
+        title = metadata.get("title") or json_data.get("title") or ""
+        summary = json_data.get("summary") or ""
+        corpus_parts.append(f"{title} {summary}".lower())
+    corpus = " ".join(corpus_parts)
+
+    if not corpus.strip():
+        return ""
+
+    # Define domain categories to detect, each with keywords to search for
+    # and the expansion line to emit if enough matches are found
+    domain_categories = [
+        {
+            "keywords": ["api", "sdk", "endpoint", "webhook", "authentication", "oauth"],
+            "min_hits": 2,
+            "line": '- **API/Developer**: `api|sdk|endpoint|endpoints|webhook|webhooks|authentication|oauth|token|rest|graphql|developer|docs`',
+        },
+        {
+            "keywords": ["changelog", "release", "version", "update", "migration"],
+            "min_hits": 2,
+            "line": '- **Changelog/Releases**: `changelog|release|releases|version|update|updates|migration|what\'s new|breaking changes`',
+        },
+        {
+            "keywords": ["recipe", "ingredient", "cooking", "meal", "nutrition"],
+            "min_hits": 2,
+            "line": '- **Recipes/Food**: `recipe|recipes|ingredient|ingredients|cooking|meal|meals|nutrition|calories|diet|prep time`',
+        },
+        {
+            "keywords": ["doctor", "surgeon", "patient", "treatment", "procedure", "clinic", "medical"],
+            "min_hits": 3,
+            "line": '- **Medical/Health**: `doctor|surgeon|patient|treatment|procedure|clinic|appointment|consultation|recovery|symptoms`',
+        },
+        {
+            "keywords": ["course", "lesson", "tutorial", "curriculum", "enrollment", "learning"],
+            "min_hits": 2,
+            "line": '- **Education/Courses**: `course|courses|lesson|lessons|tutorial|curriculum|enrollment|enroll|learning|certificate|module`',
+        },
+        {
+            "keywords": ["listing", "property", "bedroom", "sqft", "real estate", "mortgage"],
+            "min_hits": 2,
+            "line": '- **Real Estate**: `listing|listings|property|properties|bedroom|sqft|mortgage|rent|buy|sell|neighborhood`',
+        },
+        {
+            "keywords": ["cart", "checkout", "shipping", "product", "add to cart", "shop"],
+            "min_hits": 2,
+            "line": '- **E-commerce/Shopping**: `product|products|cart|checkout|shipping|order|buy|shop|store|catalog|collection`',
+        },
+        {
+            "keywords": ["integration", "plugin", "extension", "marketplace", "connector"],
+            "min_hits": 2,
+            "line": '- **Integrations/Plugins**: `integration|integrations|plugin|plugins|extension|connector|marketplace|connect|third-party|app`',
+        },
+        {
+            "keywords": ["blog", "article", "post", "author", "published", "read time"],
+            "min_hits": 3,
+            "line": '- **Blog/Articles**: `blog|article|articles|post|posts|author|published|read|guide|guides|news|insights`',
+        },
+        {
+            "keywords": ["legal", "privacy", "terms", "compliance", "gdpr", "policy"],
+            "min_hits": 2,
+            "line": '- **Legal/Compliance**: `legal|privacy|terms|compliance|gdpr|policy|disclaimer|cookie|consent|regulation`',
+        },
+    ]
+
+    matched_lines = []
+    for cat in domain_categories:
+        hits = sum(1 for kw in cat["keywords"] if kw in corpus)
+        if hits >= cat["min_hits"]:
+            matched_lines.append(cat["line"])
+
+    if not matched_lines:
+        return ""
+
+    # Cap at 5 most relevant (they're already ordered by specificity)
+    matched_lines = matched_lines[:5]
+
+    header = "\n**Site-specific expansions** (detected from page content):\n\n"
+    return header + "\n".join(matched_lines)
+
+
 def generate_skill_md(
     output_dir: str,
     domain: str,
     skill_name: str,
     site_description: str,
+    page_count: int = 0,
+    site_expansions: str = "",
 ) -> None:
     """Generate SKILL.md by rendering skill-md.template with variables.
 
     The template file (skill-md.template) is the single source of truth
     for SKILL.md content. Edit the template to change what agents see.
-    Three variables are substituted:
-      {domain}           -- the website domain (e.g. csaok.com)
-      {skill_name}      -- the skill name (e.g. csaok-com-website-search-skill)
-      {site_description} -- one-line description of the website
+    Five variables are substituted:
+      {domain}             -- the website domain (e.g. csaok.com)
+      {skill_name}        -- the skill name (e.g. csaok-com-website-search-skill)
+      {site_description}   -- one-line description of the website
+      {page_count}         -- total number of pages in the skill folder
+      {site_expansions}    -- site-specific query expansion hints (may be empty)
     See plan.md D6 for rationale.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1371,6 +1517,8 @@ def generate_skill_md(
         domain=domain,
         skill_name=skill_name,
         site_description=site_description,
+        page_count=page_count,
+        site_expansions=site_expansions,
     )
 
     skill_path = os.path.join(output_dir, "SKILL.md")
@@ -1468,8 +1616,13 @@ def main():
 
     api_key = get_api_key()
 
+    if not config.skip_scrape:
+        validate_api_key(api_key)
+
     # Determine mode label for display
-    if config.skip_scrape:
+    if config.dry_run:
+        mode = "dry-run (map only, no scraping)"
+    elif config.skip_scrape:
         mode = "skip-scrape (idempotent)"
     elif config.force_refresh:
         mode = "force-refresh"
@@ -1580,6 +1733,30 @@ def main():
             if deleted_file_count:
                 print(f"  Deleted {deleted_file_count} orphaned page file(s)")
 
+        # Dry-run: show summary and exit without scraping
+        if config.dry_run:
+            total_urls = len(map_result["urls"])
+            new_urls = len(map_result["new_urls"])
+            unchanged = len(map_result["unchanged_urls"])
+            deleted = len(map_result["deleted_urls"])
+            scrape_cost = new_urls * 5 if not config.force_refresh else total_urls * 5
+
+            print(f"\n{'='*60}")
+            print(f"DRY RUN — summary (no scraping performed)")
+            print(f"{'='*60}")
+            print(f"  Domain:       {config.domain}")
+            print(f"  Total URLs:   {total_urls}")
+            print(f"  New:          {new_urls}")
+            print(f"  Unchanged:    {unchanged}")
+            print(f"  Deleted:      {deleted}")
+            if config.max_pages and new_urls > config.max_pages:
+                print(f"  Max pages:    {config.max_pages} (would cap scraping)")
+                scrape_cost = config.max_pages * 5
+            print(f"\n  Estimated cost to scrape: ~{1 + scrape_cost} Firecrawl credits")
+            print(f"    (1 credit for map already used + ~{scrape_cost} for {new_urls if not config.force_refresh else total_urls} pages)")
+            print(f"\n  To proceed: rerun without --dry-run")
+            sys.exit(0)
+
         # Step 2: Determine what to scrape
         if config.force_refresh:
             # Force refresh: scrape everything
@@ -1676,8 +1853,14 @@ def main():
     )
     print(f"  Site description: {site_description}")
 
+    site_expansions = generate_site_expansions(pages)
+    if site_expansions:
+        print(f"  Generated site-specific query expansions")
+
     generate_skill_md(
-        config.output, config.domain, config.skill_name, site_description
+        config.output, config.domain, config.skill_name, site_description,
+        page_count=page_count,
+        site_expansions=site_expansions,
     )
     print(f"  Wrote SKILL.md")
 
