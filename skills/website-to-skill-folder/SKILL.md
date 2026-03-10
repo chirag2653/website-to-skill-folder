@@ -58,25 +58,31 @@ pip install requests pydantic tenacity
 python -c "import os; print('set' if os.environ.get('FIRECRAWL_API_KEY') else 'missing')"
 ```
 
-If missing: **stop and ask the user for their Firecrawl API key.**
+If missing: **stop and ask the user for their Firecrawl API key AND the target website in one question.**
 
-Tell them: "A Firecrawl API key is needed to crawl websites. Get a free key at https://firecrawl.dev — no credit card required."
+Tell them: "What website do you want to convert, and what's your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
 
-Once they provide it, use it inline in the run command below (Step 3).
+Once they provide both, use them in the run command below (Step 3).
 
 ## 3. Run the Pipeline
 
 Inline both the skill path and the API key so the command is self-contained:
 
 ```bash
-FIRECRAWL_API_KEY="fc-their_key_here" python "$HOME/.agents/skills/website-to-skill-folder/scripts/pipeline.py" https://example.com
+FIRECRAWL_API_KEY="fc-their_key_here" python "$HOME/.agents/skills/website-to-skill-folder/scripts/pipeline.py" https://example.com --yes
 ```
 
 If the skill was installed to a different location (check Step 1 output), substitute that path:
 
 ```bash
-FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" https://example.com
+FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes
 ```
+
+**IMPORTANT:**
+- Always include `--yes` when running from an AI agent. Without it, the pipeline
+  prompts for interactive confirmation which will time out and cancel the run.
+- Set a **10-minute timeout** on the Bash call. The pipeline can take several minutes
+  for large sites (scraping + API polling). Example: `timeout: 600000` in tool params.
 
 **Options:**
 
@@ -85,6 +91,7 @@ FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" ht
 | `--description "..."` | One-line site description for the generated SKILL.md |
 | `--output /path/to/dir` | Output directory (default: `./output/{skill_name}`) |
 | `--max-pages 100` | Limit pages scraped — directly controls Firecrawl credit cost |
+| `--yes` / `-y` | **Always use from agents.** Auto-approve cost prompt (skips interactive confirmation) |
 | `--dry-run` | Map the site and show cost estimate, then exit without scraping (1 credit for map) |
 | `--skip-scrape` | Reassemble from cache — zero API calls |
 | `--force-refresh` | Ignore cache, re-scrape all pages |

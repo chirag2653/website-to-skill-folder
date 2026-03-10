@@ -1792,6 +1792,27 @@ def main():
                 f"\n  First run: will scrape all {len(urls_to_scrape)} URLs"
             )
 
+        # Safety net: detect "unchanged" URLs with no cached scrape data.
+        # This happens when a previous run saved the map cache but the scrape
+        # was cancelled (e.g., interactive prompt timed out, crash mid-run).
+        # Without this check, the pipeline would silently produce an empty/
+        # incomplete skill folder because it thinks all URLs are "cached".
+        if not config.force_refresh and map_result.get("unchanged_urls"):
+            cached_page_urls = {
+                p.get("metadata", {}).get("sourceURL", "")
+                for p in existing_pages
+            }
+            unscraped = [
+                u for u in map_result["unchanged_urls"]
+                if u not in cached_page_urls
+            ]
+            if unscraped:
+                urls_to_scrape.extend(unscraped)
+                print(
+                    f"\n  Found {len(unscraped)} previously-mapped URL(s) with "
+                    f"no scrape data — adding to scrape queue"
+                )
+
         # Apply max_pages limit if set (controls final skill folder size)
         if config.max_pages and len(urls_to_scrape) > config.max_pages:
             original_count = len(urls_to_scrape)
@@ -1844,6 +1865,17 @@ def main():
     pages_dir = os.path.join(config.output, "pages")
     page_count = assemble_pages(pages, pages_dir)
     print(f"  Wrote {page_count} page files to {pages_dir}/")
+
+    if page_count == 0:
+        print(f"\n{'='*60}")
+        print(f"ERROR: No pages assembled — skill folder would be empty")
+        print(f"{'='*60}")
+        print(f"  This usually means a previous run cached the map but the")
+        print(f"  scrape was cancelled, timed out, or crashed.")
+        print(f"")
+        print(f"  To fix: rerun with --force-refresh")
+        print(f"{'='*60}")
+        sys.exit(1)
 
     # Extract site description with auto-extraction fallback
     site_description = extract_site_description(
