@@ -62,9 +62,21 @@ If missing: **stop and ask the user for their Firecrawl API key AND the target w
 
 Tell them: "What website do you want to convert, and what's your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
 
-Once they provide both, use them in the run command below (Step 3).
+Once they provide both, use them in steps 3 and 4 below.
 
-## 3. Run the Pipeline
+## 3. Show Cost Estimate and Get Approval
+
+Before running the pipeline, **tell the user the estimated cost and ask for confirmation**.
+
+Cost formula: **1 credit (map) + ~5 credits per page scraped**.
+
+Example message:
+> "This will crawl resend.com (up to 50 pages). Estimated cost: ~251 Firecrawl credits
+> (1 for mapping + ~250 for scraping 50 pages). Shall I proceed?"
+
+Only run the pipeline after the user approves.
+
+## 4. Run the Pipeline
 
 Inline both the skill path and the API key so the command is self-contained:
 
@@ -113,7 +125,7 @@ The pipeline retries automatically with exponential backoff (up to 5 attempts pe
 **"API key missing" or authentication errors?**
 Double-check the key starts with `fc-` and is set correctly. Get a free key at https://firecrawl.dev.
 
-## 4. Install the Output Skill
+## 5. Install the Output Skill
 
 When the pipeline finishes, it prints the exact install command with the real absolute path
 to the skill folder it just built. It looks like this (path will differ on your machine):
