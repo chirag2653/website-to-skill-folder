@@ -72,19 +72,23 @@ Do NOT suggest filtering by URL path, grep the map file, or try to limit to a su
 If the user provides `https://example.com/blog`, treat it as crawling `example.com`.
 (Subdomains like `blog.example.com` ARE different domains and are treated as such.)
 
-**Before running the pipeline, tell the user the estimated cost and ask for confirmation.**
+**Always run `--dry-run` first** to discover the actual page count (costs 1 map credit).
+Include `--max-pages N` in the dry-run if the user specified a limit.
 
-Cost formula: **1 credit (map) + ~5 credits per page scraped**.
+```bash
+FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run
+# or with a user-specified limit:
+FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run --max-pages 50
+```
 
-- If the user specified a page limit (e.g., "20 pages"), use that number directly.
-  Example: "This will crawl resend.com (up to 20 pages). Estimated cost: ~101 credits. Shall I proceed?"
-- If no page limit was given, tell the user you'll discover pages first:
-  "I'll map the site first to discover the page count (1 credit), then show you the cost before scraping."
-  Then run with `--dry-run` to get the count, show the result, and ask before the real run.
+The dry-run output shows `Total URLs` (actual pages found) and the estimated cost.
+Read those numbers and present them to the user. Examples:
 
-Do NOT run `--dry-run` if the user already specified a page limit — just calculate and ask.
+- No limit given: "The site has 782 pages. Estimated cost: ~3,911 credits. Shall I proceed, or would you like to set a page limit?"
+- User said 50 pages, site has 782: "The site has 782 pages. With your limit of 50, I'll scrape the first 50. Cost: ~251 credits. Proceed?"
+- User said 200 pages, site has 30: "The site only has 30 pages (fewer than your 200 limit). Cost: ~151 credits. Proceed?"
 
-Only run the pipeline after the user approves.
+Only run the pipeline (Step 4) after the user approves.
 
 ## 4. Run the Pipeline
 
