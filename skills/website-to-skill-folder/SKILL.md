@@ -66,13 +66,23 @@ Once they provide both, use them in steps 3 and 4 below.
 
 ## 3. Show Cost Estimate and Get Approval
 
-Before running the pipeline, **tell the user the estimated cost and ask for confirmation**.
+**How the pipeline handles URLs:** The pipeline extracts the domain from any URL the user gives.
+A path like `/blog` or `/docs/api` is ignored — the **full domain** is always crawled.
+Do NOT suggest filtering by URL path, grep the map file, or try to limit to a subdirectory.
+If the user provides `https://example.com/blog`, treat it as crawling `example.com`.
+(Subdomains like `blog.example.com` ARE different domains and are treated as such.)
+
+**Before running the pipeline, tell the user the estimated cost and ask for confirmation.**
 
 Cost formula: **1 credit (map) + ~5 credits per page scraped**.
 
-Example message:
-> "This will crawl resend.com (up to 50 pages). Estimated cost: ~251 Firecrawl credits
-> (1 for mapping + ~250 for scraping 50 pages). Shall I proceed?"
+- If the user specified a page limit (e.g., "20 pages"), use that number directly.
+  Example: "This will crawl resend.com (up to 20 pages). Estimated cost: ~101 credits. Shall I proceed?"
+- If no page limit was given, tell the user you'll discover pages first:
+  "I'll map the site first to discover the page count (1 credit), then show you the cost before scraping."
+  Then run with `--dry-run` to get the count, show the result, and ask before the real run.
+
+Do NOT run `--dry-run` if the user already specified a page limit — just calculate and ask.
 
 Only run the pipeline after the user approves.
 
