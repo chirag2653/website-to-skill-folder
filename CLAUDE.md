@@ -27,8 +27,9 @@ repo root/                              ← dev scaffolding (NOT installed)
     └── website-to-skill-folder/        ← THE SKILL (what npx skills add installs)
         ├── SKILL.md                    ← agent-facing instructions
         └── scripts/
-            ├── pipeline.py             ← the pipeline (~1800 lines)
+            ├── pipeline.py             ← the pipeline (~2200 lines)
             ├── skill-md.template       ← template for generated skills' SKILL.md
+            ├── .env.local              ← API key (gitignored, create from .env.local.example)
             └── .env.local.example      ← API key template
 ```
 
@@ -40,16 +41,74 @@ Everything under `skills/website-to-skill-folder/` ships to agents. Everything e
 - **Adding dev docs, tests, CI?** Add them at the repo root or in `_dev-notes/`.
 - **Never put dev-only files inside `skills/`** — they'd ship to every agent.
 
+## Pipeline CLI Flags
+
+```
+python pipeline.py <url> [options]
+
+Core flags:
+  --max-pages N        Cap skill folder at N pages (scrape only first N)
+  --skip-scrape        Reassemble from cache, zero API calls (idempotent)
+  --force-refresh      Ignore all cache, re-scrape everything
+  --dry-run            Map only (1 credit), show cost estimate, no scraping
+  --yes / -y           Auto-approve cost prompt (for scripts/agents)
+  --description TEXT   Override auto-extracted site description
+
+Output modes:
+  (default)            Flat skill folder at ./output/{skill_name}/
+  --repo-ready         Git-ready repo with skill nested inside subfolder
+  --output PATH        Override output dir (in --repo-ready: overrides repo root)
+
+GitHub automation (requires --repo-ready):
+  --init-github OWNER  git init + gh repo create {owner}/skill-folder-{skill_name}
+  --install            After GitHub push, npx skills add to install globally
+```
+
+## Output Modes
+
+### Flat mode (default)
+Output at `./output/{skill_name}/`:
+```
+output/
+└── {skill_name}/
+    ├── SKILL.md
+    └── pages/
+```
+Install with local path: `npx skills add "./output/{skill_name}" -g -y`
+
+### --repo-ready mode
+Output is a full git repo structure, suitable for pushing to GitHub and installing via `npx skills add owner/repo`:
+```
+{skill_name}/           ← git repo root (or --output path)
+├── {skill_name}/       ← installable skill (SKILL.md here) ← npx skills installs THIS
+│   ├── SKILL.md
+│   └── pages/
+├── dev/
+│   ├── _workspace/     ← Firecrawl cache (state.json, map-urls.txt — committed for incremental re-runs)
+│   └── notes.md        ← auto-generated run log
+├── CLAUDE.md           ← repo dev context, NOT installed
+└── .gitignore          ← excludes dev/test-output/ and dev/_workspace/batch-response.json
+```
+Deploy: `cd {skill_name} && gh repo create <owner>/skill-folder-{skill_name} --private --source . --push`
+Install: `npx skills add <owner>/skill-folder-{skill_name} -g --all`
+
+### --repo-ready + --init-github + --install (fully automated)
+Runs the entire pipeline including git init, gh repo create, push, and skill install in one command.
+
 ## How to Make Changes
 
 ### Editing the pipeline (scripts/pipeline.py)
 
 This is the main codebase. Key sections:
 - `PipelineInput` — input validation and normalization
+- `filter_content_urls()` — strips static asset URLs (CSS/JS/fonts/images) from map results
 - `map_website()` — Step 1: discover URLs via Firecrawl
 - `batch_scrape()` — Step 2: scrape pages in batches of 100
 - `assemble_pages()` — Step 3: write markdown files with frontmatter
 - `generate_skill_md()` — render the SKILL.md template
+- `_generate_repo_scaffolding()` — Step 4 (--repo-ready): write .gitignore, CLAUDE.md, dev/notes.md
+- `_run_git_push()` — Step 5 (--init-github): git init + gh repo create + push
+- `_run_install()` — Step 6 (--install): npx skills remove + add
 
 ### Editing the generated skill template (scripts/skill-md.template)
 
@@ -87,7 +146,14 @@ python skills/website-to-skill-folder/scripts/pipeline.py example.com --dry-run
 
 ### Full test run (costs Firecrawl credits)
 ```bash
-python skills/website-to-skill-folder/scripts/pipeline.py example.com --max-pages 10
+# Flat mode
+python skills/website-to-skill-folder/scripts/pipeline.py example.com --max-pages 20 --yes
+
+# --repo-ready mode (generates git repo structure)
+python skills/website-to-skill-folder/scripts/pipeline.py example.com --max-pages 20 --yes --repo-ready
+
+# --skip-scrape on an existing --repo-ready output (zero credits, tests cache reuse)
+python skills/website-to-skill-folder/scripts/pipeline.py example.com --yes --repo-ready --output output/example-repo-test --skip-scrape
 ```
 
 ### After pushing: reinstall and test
@@ -112,6 +178,18 @@ npx skills add chirag2653/website-to-skill-folder -g -y
 
 Everything else (`_workspace/`, `output/`) is created at `os.getcwd()` — the caller's working directory.
 
+In `--repo-ready` mode, workspace goes to `{repo_root}/dev/_workspace/` instead of `_workspace/{domain}/`.
+
+## URL Filtering
+
+`filter_content_urls()` removes static asset URLs from Firecrawl's map results before any scraping occurs. This prevents wasting credits on Next.js/Nuxt build artifacts (`.css`, `.js`, `/_next/static/`, etc.). The function is applied at all three call sites in `map_website()`.
+
+## URL Slug Generation
+
+`assemble_pages()` uses `metadata.sourceURL` (not `ogUrl`) as the canonical URL for slug generation. `ogUrl` is unreliable — some pages set it to the homepage URL, which causes slug collisions. `sourceURL` is always the actual URL Firecrawl scraped.
+
+The same `sourceURL`-first priority applies in `extract_site_description()` for homepage detection, which also checks `www.{domain}` variants.
+
 ## Architecture
 
 See `_dev-notes/ARCHITECTURE.md` for design decisions (D1-D9), pipeline flow, and key concepts like "summary = content manifest" and "keyword expansion makes ripgrep semantic".
@@ -131,3 +209,5 @@ See `_dev-notes/ARCHITECTURE.md` for design decisions (D1-D9), pipeline flow, an
 - Don't add literal `{` or `}` to `skill-md.template` without escaping
 - Don't commit `.env.local` (contains API keys — gitignored)
 - Don't run concurrent pipeline instances for the same domain (no file locking)
+- Don't use `ogUrl` for slug generation — always use `sourceURL` (ogUrl can point to homepage for non-homepage pages)
+- Don't remove `filter_content_urls()` — without it, static assets consume scrape credits and pollute the skill
