@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -132,11 +133,15 @@ class PipelineInput(BaseModel):
     force_refresh: bool = False
     dry_run: bool = False  # Show what would happen without scraping
     yes: bool = False  # Auto-approve cost prompt (skip interactive confirmation)
+    repo_ready: bool = False  # Output as git-ready repo with nested skill subfolder
+    init_github: str | None = None  # GitHub owner for git init + gh repo create
+    install: bool = False  # Install skill after GitHub push
 
     # Resolved fields (set by validators)
     domain: str = ""
     map_url: str = ""
     skill_name: str = ""
+    repo_root: str = ""  # Only set in --repo-ready mode
 
     @field_validator("url")
     @classmethod
@@ -227,10 +232,17 @@ class PipelineInput(BaseModel):
         self.skill_name = domain_to_skill_name(self.domain)
 
         # Set defaults that depend on domain
-        if not self.output:
-            # Output goes to the current working directory — wherever the user
-            # or agent is running the script from, not inside the script itself.
-            self.output = os.path.join(os.getcwd(), "output", self.skill_name)
+        if self.repo_ready:
+            # In repo-ready mode, --output overrides repo_root (not skill_output).
+            # The skill subfolder is always {repo_root}/{skill_name}/.
+            repo_root = self.output or os.path.join(os.getcwd(), self.skill_name)
+            self.repo_root = repo_root
+            self.output = os.path.join(repo_root, self.skill_name)
+        else:
+            if not self.output:
+                # Output goes to the current working directory — wherever the user
+                # or agent is running the script from, not inside the script itself.
+                self.output = os.path.join(os.getcwd(), "output", self.skill_name)
         if not self.description:
             self.description = f"a website at {self.domain}."
 
@@ -246,11 +258,14 @@ def parse_args() -> PipelineInput:
             "  python pipeline.py docs.stripe.com --max-pages 100\n"
             "  python pipeline.py csaok.com --skip-scrape\n"
             "  python pipeline.py csaok.com --force-refresh\n"
+            "  python pipeline.py csaok.com --repo-ready\n"
+            "  python pipeline.py csaok.com --repo-ready --init-github myuser --install\n"
             "\n"
             "Modes:\n"
             "  Default:          Incremental update (map, compare, scrape new only)\n"
             "  --skip-scrape:    Use cache, zero API calls (idempotent)\n"
             "  --force-refresh:  Ignore cache, scrape everything\n"
+            "  --repo-ready:     Output as git-ready repo with nested skill subfolder\n"
             "\n"
             "Subdomain handling:\n"
             "  Domains and subdomains are treated as SEPARATE websites.\n"
@@ -280,7 +295,12 @@ def parse_args() -> PipelineInput:
     )
     parser.add_argument(
         "--output",
-        help="Output directory (default: ./output/{skill_name})",
+        help=(
+            "Output directory. "
+            "Default (flat mode): ./output/{skill_name}. "
+            "Default (--repo-ready): ./{skill_name}/ (repo root). "
+            "In --repo-ready mode this overrides the repo root, not the skill subfolder."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -314,6 +334,31 @@ def parse_args() -> PipelineInput:
         action="store_true",
         help="Auto-approve cost prompt and proceed without asking (for scripts/agents)",
     )
+    parser.add_argument(
+        "--repo-ready",
+        action="store_true",
+        help=(
+            "Output as a git-ready repo with nested skill subfolder. "
+            "The skill lives in {skill_name}/ subfolder so npx skills installs cleanly "
+            "without dev artifacts polluting ~/.agents/skills/."
+        ),
+    )
+    parser.add_argument(
+        "--init-github",
+        metavar="OWNER",
+        help=(
+            "After assembly, run git init + gh repo create under the given GitHub "
+            "username or org. Requires --repo-ready and the gh CLI (https://cli.github.com)."
+        ),
+    )
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help=(
+            "After GitHub push, run npx skills add to install the skill globally. "
+            "Requires --init-github."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -322,6 +367,28 @@ def parse_args() -> PipelineInput:
         parser.error("--skip-scrape and --force-refresh are mutually exclusive")
     if args.dry_run and args.skip_scrape:
         parser.error("--dry-run and --skip-scrape are mutually exclusive")
+    if args.init_github and not args.repo_ready:
+        parser.error("--init-github requires --repo-ready")
+    if args.install and not args.init_github:
+        parser.error("--install requires --init-github")
+
+    # Check for required external tools
+    if args.init_github:
+        result = subprocess.run(
+            ["gh", "--version"], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            parser.error(
+                "gh CLI required for --init-github. Install from https://cli.github.com"
+            )
+    if args.install:
+        result = subprocess.run(
+            ["npx", "--version"], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            parser.error(
+                "Node.js required for --install. Install from https://nodejs.org"
+            )
 
     try:
         return PipelineInput(
@@ -334,6 +401,9 @@ def parse_args() -> PipelineInput:
             force_refresh=args.force_refresh,
             dry_run=args.dry_run,
             yes=args.yes,
+            repo_ready=args.repo_ready,
+            init_github=args.init_github,
+            install=args.install,
         )
     except Exception as e:
         parser.error(str(e))
@@ -1605,6 +1675,222 @@ def print_cancelled_message(output_dir: str, domain: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Repo-ready scaffolding helpers
+# ---------------------------------------------------------------------------
+
+
+def _generate_repo_scaffolding(
+    config,
+    page_count: int,
+    new_page_count: int,
+    total_urls_mapped: int,
+) -> None:
+    """Generate .gitignore, CLAUDE.md, and dev/notes.md in the repo root."""
+    repo_root = config.repo_root
+    domain = config.domain
+    skill_name = config.skill_name
+    github_owner = config.init_github or "<owner>"
+    repo_name = f"skill-folder-{skill_name}"
+
+    # Compute credit estimate
+    if config.skip_scrape:
+        credits_used = 0
+    elif new_page_count == 0 and not config.force_refresh:
+        credits_used = 1
+    else:
+        credits_used = 1 + new_page_count * 5
+
+    # .gitignore: write only if doesn't exist
+    gitignore_path = os.path.join(repo_root, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, "w", encoding="utf-8") as f:
+            f.write("dev/test-output/\n")
+            f.write("dev/_workspace/batch-response.json\n")
+        print(f"  Created .gitignore")
+
+    # dev/notes.md: append if exists, create if doesn't
+    notes_path = os.path.join(repo_root, "dev", "notes.md")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if os.path.exists(notes_path):
+        with open(notes_path, "a", encoding="utf-8") as f:
+            f.write(f"\n## {today}: Incremental update\n\n")
+            f.write(f"- New pages scraped: {new_page_count}\n")
+            f.write(f"- Total pages now: {page_count}\n")
+            f.write(f"- Credits used: ~{credits_used}\n")
+        print(f"  Appended to dev/notes.md")
+    else:
+        notes_content = (
+            f"# {skill_name} — Dev Notes\n"
+            f"\n"
+            f"## {today}: Initial creation\n"
+            f"\n"
+            f"- Crawled {domain} using website-to-skill-folder pipeline\n"
+            f"- URLs discovered: {total_urls_mapped}\n"
+            f"- Pages scraped: {new_page_count}\n"
+            f"- Pages assembled (with content): {page_count}\n"
+            f"- Firecrawl credits used: ~{credits_used}\n"
+            f"\n"
+            f"## Re-scrape instructions\n"
+            f"\n"
+            f"To update with new pages from the website:\n"
+            f"1. cd into this folder\n"
+            f"2. Run the pipeline in incremental mode (no --force-refresh) — only scrapes new URLs\n"
+            f"3. Push updated files to GitHub\n"
+            f"4. Reinstall: npx skills remove -g -s {skill_name} -y && "
+            f"npx skills add {github_owner}/{repo_name} -g --all\n"
+        )
+        with open(notes_path, "w", encoding="utf-8") as f:
+            f.write(notes_content)
+        print(f"  Created dev/notes.md")
+
+    # CLAUDE.md: write only if doesn't exist
+    claude_path = os.path.join(repo_root, "CLAUDE.md")
+    if not os.path.exists(claude_path):
+        claude_md_content = (
+            f"# {skill_name}\n"
+            f"\n"
+            f"Website search skill for {domain}.\n"
+            f"\n"
+            f"## Repo structure\n"
+            f"\n"
+            f"The installable skill lives in the `{skill_name}/` subfolder (has SKILL.md at its root).\n"
+            f"Everything else (dev/, CLAUDE.md, .gitignore) stays at the repo root and is NOT part of\n"
+            f"the installed skill.\n"
+            f"\n"
+            f"```\n"
+            f"repo root/\n"
+            f"├── {skill_name}/           <- THIS gets installed by npx skills\n"
+            f"│   ├── SKILL.md\n"
+            f"│   └── pages/\n"
+            f"├── dev/                    <- dev artifacts, NOT installed\n"
+            f"│   ├── _workspace/         <- Firecrawl scrape cache for incremental re-runs\n"
+            f"│   └── notes.md\n"
+            f"├── CLAUDE.md               <- this file, NOT installed\n"
+            f"└── .gitignore\n"
+            f"```\n"
+            f"\n"
+            f"## Installation\n"
+            f"\n"
+            f"This skill is installed from GitHub — never from a local path:\n"
+            f"```bash\n"
+            f"npx skills add {github_owner}/{repo_name} -g --all\n"
+            f"```\n"
+            f"\n"
+            f"## Updating the skill\n"
+            f"\n"
+            f"After any changes (new pages, SKILL.md edits, etc.):\n"
+            f"```bash\n"
+            f"git add . && git commit -m \"<what changed>\" && git push\n"
+            f"npx skills remove -g -s {skill_name} -y\n"
+            f"npx skills add {github_owner}/{repo_name} -g --all\n"
+            f"```\n"
+            f"\n"
+            f"## Re-crawling the website\n"
+            f"\n"
+            f"Run the pipeline again from this folder (incremental mode picks up only new URLs):\n"
+            f"```bash\n"
+            f'FIRECRAWL_API_KEY="fc-..." python path/to/pipeline.py https://{domain} --repo-ready --yes\n'
+            f"```\n"
+        )
+        with open(claude_path, "w", encoding="utf-8") as f:
+            f.write(claude_md_content)
+        print(f"  Created CLAUDE.md")
+
+
+def _run_git_push(config, page_count: int) -> None:
+    """Run git init + gh repo create + push."""
+    repo_root = config.repo_root
+    owner = config.init_github
+    skill_name = config.skill_name
+    domain = config.domain
+    repo_name = f"skill-folder-{skill_name}"
+
+    print(f"\n{'='*60}")
+    print(f"STEP 5: GitHub — creating/updating repo {owner}/{repo_name}")
+    print(f"{'='*60}")
+
+    # Check if repo already exists on GitHub
+    check = subprocess.run(
+        ["gh", "repo", "view", f"{owner}/{repo_name}"],
+        capture_output=True, text=True,
+    )
+
+    # Initialize git repo (no-op if already initialized)
+    subprocess.run(["git", "init"], cwd=repo_root)
+
+    if check.returncode == 0:
+        # Repo exists — add remote if not set, commit, push
+        print(f"  Repo {owner}/{repo_name} already exists — pushing update")
+        remote_check = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, cwd=repo_root,
+        )
+        if remote_check.returncode != 0:
+            subprocess.run(
+                ["git", "remote", "add", "origin",
+                 f"https://github.com/{owner}/{repo_name}.git"],
+                cwd=repo_root,
+            )
+        subprocess.run(["git", "add", "."], cwd=repo_root)
+        subprocess.run(
+            ["git", "commit", "-m", f"Update: {page_count} pages from {domain}"],
+            cwd=repo_root,
+        )
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "HEAD"],
+            cwd=repo_root,
+        )
+        if result.returncode != 0:
+            print(f"  WARNING: git push failed — push manually when ready")
+            print(f"    cd {repo_root} && git push -u origin HEAD")
+    else:
+        # Create new repo
+        print(f"  Creating new GitHub repo {owner}/{repo_name}")
+        subprocess.run(["git", "add", "."], cwd=repo_root)
+        subprocess.run(
+            ["git", "commit", "-m",
+             f"Initial commit: {page_count}-page website search skill for {domain}"],
+            cwd=repo_root,
+        )
+        result = subprocess.run(
+            ["gh", "repo", "create", f"{owner}/{repo_name}",
+             "--private", "--source", ".", "--push"],
+            cwd=repo_root,
+        )
+        if result.returncode != 0:
+            print(f"  WARNING: gh repo create failed — create and push manually:")
+            print(f"    cd {repo_root}")
+            print(f"    gh repo create {owner}/{repo_name} --private --source . --push")
+
+
+def _run_install(config) -> None:
+    """Remove old skill version and install from GitHub."""
+    owner = config.init_github
+    skill_name = config.skill_name
+    repo_name = f"skill-folder-{skill_name}"
+    github_url = f"{owner}/{repo_name}"
+
+    print(f"\n{'='*60}")
+    print(f"STEP 6: Install — installing skill from GitHub")
+    print(f"{'='*60}")
+
+    # Remove old version if exists (suppress output — ok if not installed)
+    subprocess.run(
+        ["npx", "skills", "remove", "-g", "-s", skill_name, "-y"],
+        capture_output=True,
+    )
+
+    # Install from GitHub
+    result = subprocess.run(["npx", "skills", "add", github_url, "-g", "--all"])
+    if result.returncode == 0:
+        print(f"  Installed: ~/.agents/skills/{skill_name}/")
+    else:
+        print(f"  WARNING: Installation failed")
+        print(f"  To install manually: npx skills add {github_url} -g --all")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1612,7 +1898,21 @@ def print_cancelled_message(output_dir: str, domain: str) -> None:
 def main():
     config = parse_args()
 
-    workspace_dir = os.path.join(os.getcwd(), "_workspace", config.domain)
+    # Determine workspace directory
+    if config.repo_ready:
+        default_workspace = os.path.join(config.repo_root, "dev", "_workspace")
+        old_workspace = os.path.join(os.getcwd(), "_workspace", config.domain)
+        # When --skip-scrape, fall back to old workspace location if new doesn't exist
+        if (
+            config.skip_scrape
+            and os.path.exists(os.path.join(old_workspace, "state.json"))
+            and not os.path.exists(os.path.join(default_workspace, "state.json"))
+        ):
+            workspace_dir = old_workspace
+        else:
+            workspace_dir = default_workspace
+    else:
+        workspace_dir = os.path.join(os.getcwd(), "_workspace", config.domain)
 
     api_key = get_api_key()
 
@@ -1634,12 +1934,25 @@ def main():
     print(f"  Domain:      {config.domain}")
     print(f"  Skill Name:  {config.skill_name}")
     print(f"  Map URL:     {config.map_url}")
-    print(f"  Output:      {config.output}")
+    if config.repo_ready:
+        print(f"  Repo Root:   {config.repo_root}")
+        print(f"  Skill Dir:   {config.output}")
+    else:
+        print(f"  Output:      {config.output}")
     print(f"  Workspace:   {workspace_dir}")
     print(f"  Mode:        {mode}")
 
-    os.makedirs(workspace_dir, exist_ok=True)
-    os.makedirs(config.output, exist_ok=True)
+    # Create directory structure
+    if config.repo_ready:
+        os.makedirs(os.path.join(config.output, "pages"), exist_ok=True)
+        os.makedirs(os.path.join(config.repo_root, "dev", "_workspace"), exist_ok=True)
+        os.makedirs(os.path.join(config.repo_root, "dev", "test-data"), exist_ok=True)
+        os.makedirs(os.path.join(config.repo_root, "dev", "test-output"), exist_ok=True)
+    else:
+        os.makedirs(workspace_dir, exist_ok=True)
+        os.makedirs(config.output, exist_ok=True)
+
+    total_urls_mapped = 0  # Updated after map step (0 if --skip-scrape)
 
     urls_to_delete: list[str] = []  # URLs confirmed absent enough times to delete
 
@@ -1690,6 +2003,8 @@ def main():
             skip_scrape=False,
             force_refresh=config.force_refresh,
         )
+
+        total_urls_mapped = len(map_result["urls"])
 
         # Save map state + update deletion candidates in one write
         state = load_state(workspace_dir)
@@ -1896,36 +2211,72 @@ def main():
     )
     print(f"  Wrote SKILL.md")
 
+    # Step 4: Generate repo scaffolding (only in --repo-ready mode)
+    if config.repo_ready:
+        print(f"\n{'='*60}")
+        print(f"STEP 4: Scaffolding — generating repo files")
+        print(f"{'='*60}")
+        _generate_repo_scaffolding(config, page_count, new_page_count, total_urls_mapped)
+
+    # Step 5: Git init + GitHub push (only with --init-github)
+    if config.init_github:
+        _run_git_push(config, page_count)
+
+    # Step 6: Install skill (only with --install)
+    if config.install:
+        _run_install(config)
+
+    # Compute credit string for summary
+    if config.skip_scrape:
+        credits_str = "0 (idempotent mode)"
+    elif new_page_count == 0 and not config.force_refresh:
+        credits_str = "~1 (map only, no new pages)"
+    else:
+        credits_str = (
+            f"~{1 + new_page_count * 5} "
+            f"(1 map + {new_page_count} pages x 5 scrape)"
+        )
+
     # Summary
     print(f"\n{'='*60}")
     print(f"DONE")
     print(f"{'='*60}")
-    print(f"  Skill folder: {config.output}/")
+    if config.repo_ready:
+        print(f"  Repo folder:  {config.repo_root}/")
+        print(f"  Skill folder: {config.output}/")
+    else:
+        print(f"  Skill folder: {config.output}/")
     print(f"  Pages:        {page_count}")
     print(f"  SKILL.md:     {os.path.join(config.output, 'SKILL.md')}")
+    print(f"\n  Credits used: {credits_str}")
 
-    if config.skip_scrape:
-        print(f"\n  Credits used: 0 (idempotent mode)")
-    elif new_page_count == 0 and not config.force_refresh:
-        print(f"\n  Credits used: ~1 (map only, no new pages)")
-    else:
-        print(
-            f"\n  Credits used: ~{1 + new_page_count * 5} "
-            f"(1 map + {new_page_count} pages x 5 scrape)"
-        )
+    if config.init_github:
+        owner = config.init_github
+        repo_name = f"skill-folder-{config.skill_name}"
+        print(f"\n  GitHub repo:  https://github.com/{owner}/{repo_name}")
+    if config.install:
+        print(f"  Installed:    ~/.agents/skills/{config.skill_name}/")
 
-    # Install commands
-    # npx skills copies output/ into ~/.agents/skills/ on install.
-    # Re-run this command after every pipeline update to refresh the installed skill.
-    abs_output = os.path.abspath(config.output)
-    print(f"\n  Install / update skill in agents:")
-    print(f"    (run this after every pipeline rerun to refresh installed skill)")
-    print(f"")
-    print(f"    Claude Code:")
-    print(f'    npx skills add "{abs_output}" -g -y -a claude-code')
-    print(f"")
-    print(f"    All agents:")
-    print(f'    npx skills add "{abs_output}" -g -y')
+    if config.repo_ready and not config.init_github:
+        # Show manual deploy commands
+        repo_name = f"skill-folder-{config.skill_name}"
+        abs_repo_root = os.path.abspath(config.repo_root)
+        print(f"\n  To deploy:")
+        print(f"    cd {abs_repo_root}")
+        print(f"    git init && git add . && git commit -m \"Initial commit\"")
+        print(f"    gh repo create <owner>/{repo_name} --private --source . --push")
+        print(f"    npx skills add <owner>/{repo_name} -g --all")
+    elif not config.repo_ready:
+        # Flat mode: show local install commands
+        abs_output = os.path.abspath(config.output)
+        print(f"\n  Install / update skill in agents:")
+        print(f"    (run this after every pipeline rerun to refresh installed skill)")
+        print(f"")
+        print(f"    Claude Code:")
+        print(f'    npx skills add "{abs_output}" -g -y -a claude-code')
+        print(f"")
+        print(f"    All agents:")
+        print(f'    npx skills add "{abs_output}" -g -y')
     print(f"{'='*60}")
 
 
