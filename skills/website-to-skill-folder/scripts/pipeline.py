@@ -615,6 +615,27 @@ def url_to_slug(url: str) -> str:
     return slug
 
 
+_STATIC_ASSET_RE = re.compile(
+    r"(?:/_next/static/|/_nuxt/|/static/(?:js|css|media)/|/assets/(?:js|css)/)"
+    r"|\.(?:css|js|mjs|jsx|ts|tsx|map|woff2?|ttf|eot|otf|ico|png|jpe?g|gif|svg|webp|avif|mp4|webm|pdf|zip|tar|gz)$",
+    re.IGNORECASE,
+)
+
+
+def filter_content_urls(urls: list[str]) -> list[str]:
+    """Remove static asset URLs that are not crawlable content pages.
+
+    Filters out Next.js/Nuxt build artifacts, CSS/JS bundles, fonts, images,
+    and other binary assets that Firecrawl's map step may include but should
+    never be scraped as skill pages.
+    """
+    filtered = [u for u in urls if not _STATIC_ASSET_RE.search(u)]
+    removed = len(urls) - len(filtered)
+    if removed:
+        print(f"  Filtered {removed} static asset URL(s) from map results")
+    return filtered
+
+
 def yaml_escape(s: str) -> str:
     """Escape a string for YAML double-quoted scalar."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
@@ -940,7 +961,7 @@ def map_website(
     # --- Force refresh: ignore cache, call API ---
     if force_refresh:
         print("  Force refresh: ignoring cache")
-        new_urls = _map_website_api_call(map_url, api_key, limit, ignore_cache=True)
+        new_urls = filter_content_urls(_map_website_api_call(map_url, api_key, limit, ignore_cache=True))
         cached_urls: list[str] = []
         print(f"  Found {len(new_urls)} URLs (1 credit used)")
 
@@ -969,14 +990,14 @@ def map_website(
 
         # Cache miss or mismatch -- fall through to API call
         print("  No valid cache -- calling Map API")
-        new_urls = _map_website_api_call(map_url, api_key, limit)
+        new_urls = filter_content_urls(_map_website_api_call(map_url, api_key, limit))
         cached_urls = []
         print(f"  Found {len(new_urls)} URLs (1 credit used)")
 
     # --- Default: incremental update ---
     else:
         print("  Incremental update: getting fresh map to detect changes")
-        new_urls = _map_website_api_call(map_url, api_key, limit)
+        new_urls = filter_content_urls(_map_website_api_call(map_url, api_key, limit))
         print(f"  Found {len(new_urls)} URLs (1 credit used)")
 
         # Load cached map for comparison
@@ -1275,7 +1296,7 @@ def assemble_pages(pages: list[dict], pages_dir: str) -> int:
         if not markdown or not markdown.strip():
             continue
 
-        source_url = metadata.get("ogUrl") or metadata.get("sourceURL", "")
+        source_url = metadata.get("sourceURL") or metadata.get("ogUrl", "")
         # Prioritize SEO meta tags over LLM extraction (SEO team's work is authoritative)
         title = metadata.get("title") or json_data.get("title", "Untitled")
         description = metadata.get("description") or metadata.get("ogDescription") or json_data.get("description", "")
@@ -1338,16 +1359,23 @@ def extract_site_description(
     
     # Tier 2: Extract from homepage metadata
     homepage_url = f"https://{domain}"
+    homepage_url_www = f"https://www.{domain}"
     homepage_url_alt = f"http://{domain}"
-    
+    homepage_url_www_alt = f"http://www.{domain}"
+    homepage_candidates = {
+        u.rstrip("/") for u in [
+            homepage_url, homepage_url_www, homepage_url_alt, homepage_url_www_alt
+        ]
+    }
+
     homepage = None
     for page in pages:
         metadata = page.get("metadata", {})
         source_url = (
-            metadata.get("ogUrl", "") or metadata.get("sourceURL", "")
+            metadata.get("sourceURL", "") or metadata.get("ogUrl", "")
         ).rstrip("/")
-        
-        if source_url in (homepage_url.rstrip("/"), homepage_url_alt.rstrip("/")):
+
+        if source_url in homepage_candidates:
             homepage = page
             break
     
@@ -1714,7 +1742,10 @@ def _generate_repo_scaffolding(
 
     if os.path.exists(notes_path):
         with open(notes_path, "a", encoding="utf-8") as f:
-            f.write(f"\n## {today}: Incremental update\n\n")
+            if config.skip_scrape:
+                f.write(f"\n## {today}: Reassembled from cache (--skip-scrape)\n\n")
+            else:
+                f.write(f"\n## {today}: Incremental update\n\n")
             f.write(f"- New pages scraped: {new_page_count}\n")
             f.write(f"- Total pages now: {page_count}\n")
             f.write(f"- Credits used: ~{credits_used}\n")
@@ -1788,10 +1819,13 @@ def _generate_repo_scaffolding(
             f"\n"
             f"## Re-crawling the website\n"
             f"\n"
-            f"Run the pipeline again from this folder (incremental mode picks up only new URLs):\n"
+            f"Run the pipeline from this repo root (incremental mode picks up only new URLs):\n"
             f"```bash\n"
-            f'FIRECRAWL_API_KEY="fc-..." python path/to/pipeline.py https://{domain} --repo-ready --yes\n'
+            f'FIRECRAWL_API_KEY="fc-..." python path/to/pipeline.py https://{domain} --repo-ready --output . --yes\n'
             f"```\n"
+            f"\n"
+            f"The `--output .` flag anchors the repo root to the current directory,\n"
+            f"so the skill subfolder lands at `./{skill_name}/` as expected.\n"
         )
         with open(claude_path, "w", encoding="utf-8") as f:
             f.write(claude_md_content)
@@ -2214,7 +2248,7 @@ def main():
     # Step 4: Generate repo scaffolding (only in --repo-ready mode)
     if config.repo_ready:
         print(f"\n{'='*60}")
-        print(f"STEP 4: Scaffolding — generating repo files")
+        print(f"STEP 4: Scaffolding -- generating repo files")
         print(f"{'='*60}")
         _generate_repo_scaffolding(config, page_count, new_page_count, total_urls_mapped)
 
