@@ -61,7 +61,7 @@ PAGES="/path/to/your/{skill_name}/pages"
 Query
   → Step 1: Expand query into search keywords
   → Step 2: rg -li "term1|term2|term3" $PAGES       → candidate filenames
-  → Step 3: rg -li "..." $PAGES | xargs head -n 12  → frontmatter preview
+  → Step 3: rg -li "..." $PAGES | while IFS= read -r f; do head -n 12 "$f"; done  → frontmatter preview
   → Step 4: Reason over ALL frontmatter fields to select pages
   → Step 5: Load selected pages (1-3 quick, 3-7 moderate, 7+ deep research)
   → Step 6: Extract URLs from loaded pages' frontmatter and cite sources
@@ -121,7 +121,7 @@ rg -li "broad_term" $PAGES | xargs rg -li "specific_term"
 ### Step 3 — Preview frontmatter
 
 ```bash
-rg -li "term1|term2" $PAGES | xargs head -n 12
+rg -li "term1|term2" $PAGES | while IFS= read -r f; do head -n 12 "$f"; done
 ```
 
 Shows complete frontmatter for each candidate:
@@ -242,7 +242,7 @@ rg -i "\$|price|cost|fee|pricing|rates" $PAGES
 
 **Example: Finding CTAs**
 1. Search: `rg -li "get started|contact|book|schedule" $PAGES`
-2. Preview: `rg -li "..." $PAGES | xargs head -n 12`
+2. Preview: `rg -li "..." $PAGES | while IFS= read -r f; do head -n 12 "$f"; done`
 3. Identify page types with CTAs
 4. Load 2-3 pages from each type
 5. Extract CTA text from markdown (`[text](url)` patterns)
@@ -272,7 +272,7 @@ summary: |
 
 **Essential commands:**
 - `rg -li "pattern" $PAGES` → Find filenames (case-insensitive)
-- `rg -li "pattern" $PAGES | xargs head -n 12` → Preview frontmatter
+- `rg -li "pattern" $PAGES | while IFS= read -r f; do head -n 12 "$f"; done` → Preview frontmatter
 - `rg "^title:" $PAGES` → List all page titles
 - `rg -li "A" $PAGES | xargs rg -li "B"` → Narrow search (pipe pattern)
 
