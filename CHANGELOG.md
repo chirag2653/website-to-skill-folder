@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed (BREAKING) — GitHub-first architecture
+- The pipeline is now **GitHub-first**. GitHub is the source of truth: every run clones
+  `github.com/{owner}/skill-folder-{skill_name}` into a temp directory, updates it
+  incrementally, pushes it back, and installs it via `npx skills add`. The temp directory
+  is deleted afterward — nothing durable is written to the local working directory.
+- Removed the flat local-only output mode and the `--repo-ready` / `--init-github` /
+  `--output` flags. There is exactly one output target: the GitHub repo.
+
+### Added
+- `--owner NAME` — GitHub account/org for the repo (defaults to the authenticated `gh` user).
+- `--visibility public|private` — visibility for a newly created repo. Defaults to a prompt
+  (or `private` with `--yes`). Ignored when the repo already exists.
+- `--no-install` — push to GitHub but skip the `npx skills add` step.
+- `--work-dir PATH` / `--keep-temp` — use/keep a persistent working directory (debugging).
+- Owner auto-derivation via `gh api user`, so the minimum inputs are URL + Firecrawl key.
+- New helpers: `resolve_owner()`, `repo_exists()`, `prepare_work_dir()`, `prompt_visibility()`.
+
+### Changed
+- `--skip-scrape` now reassembles from the repo's committed cache and pushes; it no longer
+  requires a Firecrawl API key.
+- `--dry-run` now also syncs with GitHub, so it reports only *new* pages for an existing repo.
+- `gh` CLI is now always required; Node.js is required unless `--no-install`/`--dry-run`.
+- Updated SKILL.md, README.md, and CLAUDE.md for the GitHub-first flow.
+
 ## [1.1.0] - 2026-03-05
 
 ### Added

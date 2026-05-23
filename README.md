@@ -1,57 +1,71 @@
 # website-to-skill-folder
 
-**Turn any website into an installable AI agent skill — one command, fully offline search.**
+**Turn any website into an installable AI agent skill that lives in your own GitHub — one command, fully offline search.**
 
-Point it at a URL. It crawls the site, packages every page as searchable markdown, and hands you a ready-to-install skill folder. Run the printed `npx skills add` command and your AI agents (Claude Code, Gemini CLI, Cursor, Codex, and more) can answer questions about that website — no live browsing, no API calls at query time.
+Point it at a URL. It crawls the site, packages every page as searchable markdown, pushes the result to a repo in **your** GitHub account, and installs it via `npx skills add`. Your AI agents (Claude Code, Gemini CLI, Cursor, Codex, and more) can then answer questions about that website — no live browsing, no API calls at query time. Re-run later and it updates the same repo incrementally.
 
 ---
 
-## The Two-Step Flow
+## How It Works
 
-### Step 1 — Run the pipeline on any website URL
+GitHub is the source of truth. A single run:
+
+1. Resolves your GitHub account (`gh api user`, or `--owner`).
+2. Clones `github.com/{owner}/skill-folder-{skill_name}` into a temp directory — or starts a fresh one if it doesn't exist yet.
+3. Maps the site and compares against the repo's committed cache, so it scrapes only **new** pages and deletes pages that disappeared from the site.
+4. Assembles the skill folder and pushes it back to GitHub (creating the repo, private by default, the first time).
+5. Installs it with `npx skills add`.
+6. Deletes the temp directory. Nothing durable is left on your machine.
 
 ```bash
-python skills/website-to-skill-folder/scripts/pipeline.py https://docs.example.com
+python skills/website-to-skill-folder/scripts/pipeline.py https://docs.example.com --yes
 ```
 
-The pipeline maps the site, scrapes every page, and builds a skill folder in `output/`:
+At the end it prints the repo URL and the install command teammates can use:
 
 ```
-output/
-└── docs.example.com-website-search-skill/
-    ├── SKILL.md       # Agent instructions + keyword index
-    └── pages/         # One .md file per scraped page
+  GitHub repo:  https://github.com/you/skill-folder-docs-example-com-website-search-skill
+  Installed:    ~/.agents/skills/docs-example-com-website-search-skill/
+
+  Install in any agent:
+    npx skills add you/skill-folder-docs-example-com-website-search-skill -g --all
 ```
 
-At the end it prints the exact install command:
-
-```
-  Install / update skill in agents:
-
-    Claude Code:
-    npx skills add "/path/to/output/docs.example.com-website-search-skill" -g -y -a claude-code
-
-    All agents:
-    npx skills add "/path/to/output/docs.example.com-website-search-skill" -g -y
-```
-
-### Step 2 — Install the skill
-
-Copy and run the printed command. The website search skill is now live in your agents. Ask anything about the site:
+Ask your agent anything about the site:
 
 > *"What are the authentication options?"*
 > *"How do I configure webhooks?"*
 > *"What changed in the latest release?"*
 
-The agent searches the skill folder offline — fast, accurate, and with source citations back to the original page URLs.
+The agent searches the skill folder offline — fast, accurate, with source citations back to the original page URLs.
 
-Re-run the pipeline any time to pick up new pages. Re-run the `npx skills add` command to push the update to your agents.
+---
+
+## Public, Private, and Teams
+
+New repos are **private by default**. You're prompted at creation time (or pass a flag):
+
+```bash
+# Public — anyone can install with no auth
+python .../pipeline.py https://example.com --yes --visibility public
+
+# Host under a shared org so your team has access
+python .../pipeline.py https://example.com --yes --owner my-org
+```
+
+For a private repo, teammates install with their own GitHub access:
+
+```bash
+npx skills add my-org/skill-folder-example-com-website-search-skill -g --all
+```
+
+`--visibility` only applies when the repo is first created; after that, manage visibility on GitHub.
 
 ---
 
 ## Install This Tool as an Agent Skill
 
-The pipeline itself is packaged as an agent skill. Install it once and ask your agent to run it for you:
+The pipeline itself is packaged as an agent skill. Install it once and ask your agent to run it:
 
 ```bash
 # All agents (Claude Code, Gemini CLI, Codex, Cursor, etc.):
@@ -61,11 +75,11 @@ npx skills add chirag2653/website-to-skill-folder -g -y
 npx skills add chirag2653/website-to-skill-folder -g -y -a claude-code
 ```
 
-Then from any project folder, just ask:
+Then from any project, just ask:
 
 > *"Create a website search skill for https://example.com"*
 
-The agent runs the pipeline, builds the skill folder in `output/`, and prints the install command — you run it, the website skill is installed.
+The agent runs the pipeline, pushes the skill to your GitHub, and installs it.
 
 ---
 
@@ -73,47 +87,55 @@ The agent runs the pipeline, builds the skill folder in `output/`, and prints th
 
 ### Prerequisites
 
-1. **Firecrawl API key** — get one free at [firecrawl.dev](https://firecrawl.dev) (used to map and scrape the site)
-
-2. **Python dependencies:**
+1. **Python 3.8+** and dependencies: `pip install -r requirements.txt`
+2. **GitHub CLI**, authenticated — install [`gh`](https://cli.github.com), then `gh auth login`. GitHub is where the skill lives.
+3. **Node.js** (for `npx skills add`) — [nodejs.org](https://nodejs.org). Skip with `--no-install`.
+4. **Firecrawl API key** — free at [firecrawl.dev](https://firecrawl.dev). Set it via:
    ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Set your API key** (choose one):
-   ```bash
-   # Option A: environment variable
    export FIRECRAWL_API_KEY="fc-your_key_here"
-
-   # Option B: .env.local file next to the script
-   cp skills/website-to-skill-folder/scripts/.env.local.example skills/website-to-skill-folder/scripts/.env.local
-   # edit skills/website-to-skill-folder/scripts/.env.local and add your key
+   # or: cp scripts/.env.local.example scripts/.env.local  (then edit it)
    ```
 
 ### Run
 
 ```bash
-python skills/website-to-skill-folder/scripts/pipeline.py https://example.com
+python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --yes
 ```
-
-Output lands in `output/` inside your current directory. The script prints the `npx skills add` install command at the end.
 
 ### Options
 
 | Flag | Purpose |
 |------|---------|
+| `--owner NAME` | GitHub account/org that owns the repo (default: the authenticated `gh` user) |
+| `--visibility public\|private` | Visibility for a **new** repo (default: private). Ignored on updates |
 | `--description "..."` | One-line site description added to the generated SKILL.md |
-| `--output /path/to/dir` | Output directory (default: `./output/{skill_name}`) |
 | `--max-pages 100` | Cap pages scraped — directly controls Firecrawl credit cost |
-| `--dry-run` | Map the site and show cost estimate, then exit without scraping |
-| `--skip-scrape` | Reassemble from cache, zero API calls |
+| `--yes` / `-y` | Auto-approve cost + visibility prompts (use from scripts/agents) |
+| `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
+| `--skip-scrape` | Rebuild from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache and re-scrape all pages |
+| `--no-install` | Push to GitHub but skip the install step |
+| `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
 
 ---
 
 ## What Gets Produced
 
-Each scraped page becomes a `.md` file with YAML frontmatter optimised for fast `grep`/`ripgrep` search:
+The repo pushed to GitHub:
+
+```
+skill-folder-{skill_name}/   ← git repo in your GitHub account
+├── {skill_name}/            ← the installable skill (npx installs THIS)
+│   ├── SKILL.md             ← agent instructions + keyword index
+│   └── pages/               ← one .md file per scraped page
+├── dev/
+│   ├── _workspace/          ← scrape cache (state.json) — committed, powers incremental re-runs
+│   └── notes.md
+├── CLAUDE.md
+└── .gitignore
+```
+
+Each page is a `.md` file with YAML frontmatter optimised for `grep`/`ripgrep`:
 
 ```yaml
 ---
@@ -125,18 +147,17 @@ summary: |
 ---
 ```
 
-The top-level `SKILL.md` indexes the whole site so agents know what's available before searching individual pages.
-
 ---
 
 ## Features
 
-- **Incremental updates** — Only re-scrapes new or changed pages on subsequent runs
-- **Resumable** — Saves progress to `_workspace/`; picks up exactly where it stopped if interrupted
-- **Robust deletion** — Orphaned pages are removed only after 3 consecutive map misses (not on a single transient failure)
-- **SEO-aware extraction** — Prefers `<meta>` tags over LLM extraction for title and description
-- **Source citations** — Every answer the agent gives includes a link back to the original page URL
-- **Multi-domain** — Each domain gets its own isolated output folder and workspace cache
+- **GitHub-hosted** — The skill lives in a repo you own; install and update from anywhere.
+- **Incremental updates** — Clones the repo and re-scrapes only new pages on each run.
+- **Update-and-delete** — Pages removed from the site are deleted after 3 consecutive map misses (guards against transient failures).
+- **Resumable** — Progress is saved to the committed cache; an interrupted run picks up where it stopped.
+- **Public or private** — Your choice at creation; host under an org to share with a team.
+- **SEO-aware extraction** — Prefers `<meta>` tags over LLM extraction for title and description.
+- **Source citations** — Every answer links back to the original page URL.
 
 ---
 
@@ -150,58 +171,13 @@ Powered by [Firecrawl](https://firecrawl.dev):
 | Scrape (per page) | ~5 |
 | 100-page site | ~501 total |
 
-Incremental re-runs only pay for new or changed pages — far cheaper after the first run.
-
----
-
-## Repo Structure
-
-This repo separates the **installable skill** from **dev/project files**:
-
-```
-repo root/                                    ← project scaffolding (README, dev notes, etc.)
-├── README.md
-├── requirements.txt
-├── .gitignore
-│
-└── skills/
-    └── website-to-skill-folder/              ← what `npx skills add` installs
-        ├── SKILL.md
-        └── scripts/
-            ├── pipeline.py
-            ├── skill-md.template
-            └── .env.local.example
-```
-
-`npx skills add` auto-discovers and installs only the `skills/website-to-skill-folder/` subfolder. Dev files like README.md and .gitignore are not shipped to agents.
-
-## How the Folders Are Owned
-
-```
-~/.agents/skills/website-to-skill-folder/   ← this tool (read-only, never written to)
-├── SKILL.md
-└── scripts/
-    ├── pipeline.py
-    ├── skill-md.template
-    └── .env.local.example
-
-your-project/                               ← your data (created automatically on first run)
-├── output/
-│   └── {domain}-website-search-skill/
-│       ├── SKILL.md
-│       └── pages/
-└── _workspace/
-    └── {domain}/
-        ├── map-urls.txt
-        └── state.json
-```
-
-The tool lives in the skill folder. Everything it produces — the website search skill and the workspace cache — lands in your current working directory. Nothing is ever written back to the tool's own folder.
+Incremental re-runs only pay for new pages. `--skip-scrape` costs 0 credits.
 
 ---
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.8+ and `pip install -r requirements.txt`
+- [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`)
+- [Node.js](https://nodejs.org) (for `npx skills add`)
 - [Firecrawl](https://firecrawl.dev) API key
-- `pip install -r requirements.txt`
