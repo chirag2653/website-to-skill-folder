@@ -6,6 +6,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed (BREAKING) — GitHub-first architecture
+- The pipeline is now **GitHub-first**. GitHub is the source of truth: every run clones
+  `github.com/{owner}/skill-folder-{skill_name}` into a temp directory, updates it
+  incrementally, pushes it back, and installs it via `npx skills add`. The temp directory
+  is deleted afterward — nothing durable is written to the local working directory.
+- Removed the flat local-only output mode and the `--repo-ready` / `--init-github` /
+  `--output` flags. There is exactly one output target: the GitHub repo.
+
+### Added
+- **`preflight.py`** — a stdlib-only environment check that runs before the pipeline. It
+  probes Python, packages, git + commit identity, `gh` + auth (and shows which account repos
+  land under), Node/npx, and the Firecrawl key; tags each as OK/FIX/GUIDE/ASK with
+  platform-aware install hints and a clear READY/BLOCKED verdict. `--fix` auto-installs the
+  Python packages. SKILL.md now drives onboarding from this single report.
+- Graceful failures in `pipeline.py`: third-party imports degrade to an actionable message
+  instead of a traceback; missing `git`/`gh`/Node exit with guidance (not an argparse dump);
+  git commit identity is verified **before** any scraping so a misconfigured git never wastes
+  Firecrawl credits.
+- Generated repos now include a production-grade **README.md** landing page (install command,
+  visibility-aware "share with teammates" section, update instructions, what's-inside).
+- Visibility-aware orchestration: the final summary and README state whether the repo is
+  public or private (`get_repo_visibility()` for existing repos), and always surface a
+  copy-paste **share command** for teammates alongside install + update.
+- `--owner NAME` — GitHub account/org for the repo (defaults to the authenticated `gh` user).
+- `--visibility public|private` — visibility for a newly created repo. Defaults to a prompt
+  (or `private` with `--yes`). Ignored when the repo already exists.
+- `--no-install` — push to GitHub but skip the `npx skills add` step.
+- `--work-dir PATH` / `--keep-temp` — use/keep a persistent working directory (debugging).
+- Owner auto-derivation via `gh api user`, so the minimum inputs are URL + Firecrawl key.
+- New helpers: `resolve_owner()`, `repo_exists()`, `prepare_work_dir()`, `prompt_visibility()`.
+
+### Changed
+- Agent flow (SKILL.md) now **always pushes** but **installs only on request**: the run is
+  non-interactive (`--yes --no-install`) so the user never waits at a terminal prompt; then
+  the agent gives a flow-aware summary (with a shareable link for public repos), asks once
+  whether to install locally, runs `npx skills add`, **validates** the skill landed in
+  `~/.agents/skills/{skill_name}/`, and confirms it's ready to use in a new session. On
+  updates it reinstalls silently if already present (no re-ask). Direct CLI runs still
+  auto-install unless `--no-install` is passed.
+- `--skip-scrape` now reassembles from the repo's committed cache and pushes; it no longer
+  requires a Firecrawl API key.
+- `--dry-run` now also syncs with GitHub, so it reports only *new* pages for an existing repo.
+- `gh` CLI is now always required; Node.js is required unless `--no-install`/`--dry-run`.
+- Updated SKILL.md, README.md, and CLAUDE.md for the GitHub-first flow.
+
 ## [1.1.0] - 2026-03-05
 
 ### Added

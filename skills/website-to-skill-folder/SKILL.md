@@ -9,14 +9,21 @@ description: >
   a site, download a website for AI, convert website to markdown, build a knowledge
   base from a URL, or make a site searchable offline. Also use when the user provides
   a URL and wants it indexed, wants offline docs from a live site, or asks to
-  "turn this website into a skill". Outputs an installable skill folder plus the
-  exact npx command to add it to any AI agent.
+  "turn this website into a skill". The skill is hosted in the user's GitHub
+  account and installed from there via npx.
 ---
 
 # Website-to-Skill Pipeline
 
 Runs `scripts/pipeline.py` to crawl a website and produce an installable skill folder.
 The script handles everything — no need to read it.
+
+**GitHub is the source of truth.** Each run clones the user's skill repo from
+GitHub into a temp directory, updates it incrementally (scrape new pages, delete
+pages that disappeared from the site), and pushes it back. Installing it locally
+via `npx skills add` is a quick, opt-in last step (Step 5). The temp directory is
+deleted afterward — nothing durable is left on the local machine, and the folder you
+run from is never touched. Re-running the same command later updates the same repo.
 
 ## 1. Locate the Skill
 
@@ -27,157 +34,186 @@ SKILL_DIR="$HOME/.agents/skills/website-to-skill-folder"
 echo "Skill dir: $SKILL_DIR"
 ```
 
-## 2. Pre-flight Checks
+## 2. Pre-flight — run one check, then act on it
 
-Run these in order before the pipeline. Fix anything missing before proceeding — do not skip.
+Don't probe tools one-by-one. Run the bundled pre-flight script **once**. It checks
+everything (Python, packages, git + identity, `gh` + auth, Node/npx, Firecrawl key) and
+prints a tagged report with a final `VERDICT`.
 
-### Python (required: 3.8+)
-
-```bash
-python --version 2>&1 || python3 --version 2>&1
-```
-
-- If `python` is Python 2 or not found, use `python3` for all commands below.
-- If neither is found: tell the user to install Python 3.8+ and stop.
-
-### Python packages (one-time)
+> Use `python3` instead of `python` if `python` is missing (common on macOS/Linux), and
+> use the **same interpreter** for every command in this guide.
 
 ```bash
-python -c "import requests, pydantic, tenacity; print('OK')" 2>&1
+python "$SKILL_DIR/scripts/preflight.py"
 ```
 
-If `ModuleNotFoundError`: install and retry before proceeding.
+Each line is tagged: `[OK]`, `[FIX]` (auto-fixable), `[GUIDE]` (a command to run), or
+`[ASK]` (a value to provide at runtime). Act on the `VERDICT`:
 
-```bash
-pip install requests pydantic tenacity
-```
+- **`VERDICT: READY`** → proceed to the cost estimate (Step 3). Ask the user for the
+  minimum needed to dry-run: the **target URL** and the **Firecrawl API key** (only if
+  it's tagged `[ASK]`). Visibility and owner are decided just before the run (Step 4).
+  If the report shows `gh authenticated as <name>`, that's the account the repo lands under.
 
-### Firecrawl API key
+- **`VERDICT: BLOCKED`** → help the user clear each flagged item, then re-run preflight:
+  - `[FIX]` Python packages → offer to run it for them: `python "$SKILL_DIR/scripts/preflight.py" --fix`
+  - `[GUIDE]` git identity → if they give you a name/email, run the printed
+    `git config --global ...` commands for them.
+  - `[GUIDE]` `gh` not installed → share the printed install command for their OS.
+  - `[GUIDE]` `gh` not authenticated → ask the user to run `gh auth login` themselves
+    (it's interactive — you can't do it for them).
+  - `[GUIDE]` Node missing → either help install it, or note you'll run with `--no-install`.
 
-```bash
-python -c "import os; print('set' if os.environ.get('FIRECRAWL_API_KEY') else 'missing')"
-```
+  **Do not run the pipeline while BLOCKED** — it will fail or waste Firecrawl credits.
 
-If missing: **stop and ask the user for their Firecrawl API key AND the target website in one question.**
+Be proactive but not noisy: when everything is `OK`, just confirm you're set and ask for
+the URL + key. Only surface setup steps for the items that are actually missing.
 
-Tell them: "What website do you want to convert, and what's your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
+When you need the key, ask in one line: "What website do you want to convert, and what's
+your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
 
-Once they provide both, use them in steps 3 and 4 below.
+> The pipeline self-checks too: if it's run with a tool missing, it exits with the same
+> guidance instead of a stack trace. Pre-flight just lets you catch everything up front.
 
-## 3. Show Cost Estimate and Get Approval
+## 3. Estimate Cost First (dry-run)
 
-**How the pipeline handles URLs:** The pipeline extracts the domain from any URL the user gives.
-A path like `/blog` or `/docs/api` is ignored — the **full domain** is always crawled.
-Do NOT suggest filtering by URL path, grep the map file, or try to limit to a subdirectory.
-If the user provides `https://example.com/blog`, treat it as crawling `example.com`.
-(Subdomains like `blog.example.com` ARE different domains and are treated as such.)
+**How the pipeline handles URLs:** It extracts the domain from any URL. A path like
+`/blog` or `/docs/api` is ignored — the **full domain** is always crawled. Subdomains
+like `blog.example.com` ARE different domains and produce separate skills. Do not try to
+limit to a subdirectory or grep the URL list.
 
-**Always run `--dry-run` first** to discover the actual page count (costs 1 map credit).
-Include `--max-pages N` in the dry-run if the user specified a limit.
+**Always run `--dry-run` first** to discover the page count and cost (≤1 map credit). It
+syncs with GitHub too, so for an existing repo it reports only *new* pages — **a dry-run
+creates and changes nothing** on GitHub.
+
+> **About the key prefix:** only inline `FIRECRAWL_API_KEY="..."` (with the user's real
+> key) when pre-flight tagged the key `[ASK]`. If it was `[OK]`, the key is already
+> configured — **omit the prefix entirely**; passing a placeholder would override the real
+> key and cause a 401. This applies to every command below, including the run in Step 4.
 
 ```bash
 FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run
-# or with a user-specified limit:
+# with a page cap:
 FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run --max-pages 50
 ```
 
-The dry-run output shows `Total URLs` (actual pages found) and the estimated cost.
-Read those numbers and present them to the user. Examples:
-
-- No limit given: "The site has 782 pages. Estimated cost: ~3,911 credits. Shall I proceed, or would you like to set a page limit?"
-- User said 50 pages, site has 782: "The site has 782 pages. With your limit of 50, I'll scrape the first 50. Cost: ~251 credits. Proceed?"
-- User said 200 pages, site has 30: "The site only has 30 pages (fewer than your 200 limit). Cost: ~151 credits. Proceed?"
-
-Only run the pipeline (Step 4) after the user approves.
+Read `Total URLs` / `New` and the estimated cost from the output, present them to the
+user, and continue only once they approve the spend.
 
 ## 4. Run the Pipeline
 
-Inline both the skill path and the API key so the command is self-contained:
+For a **brand-new** skill, confirm one thing first: **private** (default) or **public**?
+(Public installs need no auth; private needs repo access. `--visibility public` for public;
+`--owner <org>` to host under a shared org.) For an **update** to a skill that already
+exists, **don't re-ask** — visibility is fixed; just run.
+
+Run it non-interactively so nothing blocks the terminal. Pass `--yes` (auto-approves the
+cost you already previewed) and **`--no-install`** — the run pushes to GitHub now; installing
+locally is a separate, opt-in step you handle in Step 5:
 
 ```bash
-FIRECRAWL_API_KEY="fc-their_key_here" python "$HOME/.agents/skills/website-to-skill-folder/scripts/pipeline.py" https://example.com --yes
+# default: private, the authenticated account
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install
+# public, under an org
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install --visibility public --owner my-org
 ```
 
-If the skill was installed to a different location (check Step 1 output), substitute that path:
-
-```bash
-FIRECRAWL_API_KEY="fc-their_key_here" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes
-```
+The run clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, scrapes only new
+pages, deletes pages removed from the site, and **pushes** — fast, no prompts, nothing
+installed on the machine yet.
 
 **IMPORTANT:**
-- Always include `--yes` when running from an AI agent. Without it, the pipeline
-  prompts for interactive confirmation which will time out and cancel the run.
-- Set a **10-minute timeout** on the Bash call. The pipeline can take several minutes
-  for large sites (scraping + API polling). Example: `timeout: 600000` in tool params.
+- Always pass `--yes` and `--no-install` from an agent: the run stays non-interactive and
+  doesn't touch the user's machine. You install conversationally in Step 5 — don't make the
+  user wait at a terminal prompt.
+- `--visibility` only applies when the repo is first created; it's ignored on later updates.
+- Set a **10-minute timeout** on the Bash call (e.g. `timeout: 600000`). Large sites take
+  several minutes (scraping + API polling).
 
 **Options:**
 
 | Flag | Purpose |
 |------|---------|
+| `--owner NAME` | GitHub account/org to own the repo (default: the authenticated gh user) |
+| `--visibility public\|private` | Visibility for a **new** repo (default: private). Ignored on updates |
 | `--description "..."` | One-line site description for the generated SKILL.md |
-| `--output /path/to/dir` | Output directory (default: `./output/{skill_name}`) |
-| `--max-pages 100` | Limit pages scraped — directly controls Firecrawl credit cost |
-| `--yes` / `-y` | **Always use from agents.** Auto-approve cost prompt (skips interactive confirmation) |
-| `--dry-run` | Map the site and show cost estimate, then exit without scraping (1 credit for map) |
-| `--skip-scrape` | Reassemble from cache — zero API calls |
+| `--max-pages N` | Limit pages scraped — directly controls Firecrawl credit cost |
+| `--yes` / `-y` | **Always use from agents.** Auto-approve cost + visibility prompts |
+| `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
+| `--skip-scrape` | Rebuild the skill from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache, re-scrape all pages |
+| `--no-install` | Push to GitHub but skip the npx install step |
+| `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
+| `--keep-temp` | Keep the temp working dir after the run (debugging) |
+
+## 5. Summarize, Then Install on Request
+
+The run prints a `DONE` block with the repo URL + visibility, the install command, the
+share command, and the update command. Give the user a short, flow-aware summary:
+
+- **Always:** "Done — your {domain} skill is live at {repo_url} ({visibility})."
+- **Public repo:** add "Anyone can install it — share this: `npx skills add {owner}/skill-folder-{skill_name} -g --all`."
+- **Private repo:** add "To share, give teammates repo access (or host under an org), then they run the same command."
+
+Then ask **once**: *"Want me to install it on this machine now so you can use it?"*
+
+If **yes**, install it from GitHub:
+
+```bash
+npx skills add {owner}/skill-folder-{skill_name} -g --all
+```
+
+Then **validate** it actually landed — don't trust the exit code alone:
+
+```bash
+ls "$HOME/.agents/skills/{skill_name}/SKILL.md" >/dev/null 2>&1 && echo "INSTALLED" || echo "NOT FOUND"
+```
+
+- **INSTALLED** → "All set ✓ — the {domain} search skill is installed. Open a **new session**
+  and just ask me about {domain} (e.g. *'what does {domain} say about pricing?'*). I'll search
+  it offline and cite the source pages."
+- **NOT FOUND** → share the manual command, confirm Node is present (`node --version`), and
+  see Troubleshooting.
+
+If **no**, leave it — the skill is safe on GitHub and can be installed any time with the
+command above. (Repo URL → `{owner}/skill-folder-{skill_name}`; the skill installs to
+`~/.agents/skills/{skill_name}/`. `{skill_name}` is the domain with dots as hyphens, e.g.
+`example.com` → `example-com-website-search-skill`.)
+
+**Updating later** is the same run (Step 4, no need to re-ask visibility). For the install
+step, check first: if `~/.agents/skills/{skill_name}/` already exists, just reinstall
+silently to refresh it — don't re-ask. Only ask when it isn't installed yet.
 
 ## Troubleshooting & Recovery
 
 **Pipeline crashed or timed out mid-scrape?**
-Just rerun the same command. The pipeline saves progress after each batch to `_workspace/{domain}/state.json`. Completed batches are skipped automatically — you only pay for the remaining pages.
+Just rerun the same command. Progress is saved after each batch to the committed
+`dev/_workspace/state.json`; completed batches are skipped — you only pay for the rest.
 
 **Want to rebuild the skill folder without re-scraping?**
-Use `--skip-scrape`. This reassembles from cached data with zero API calls — useful if you want to tweak `--description` or the template changed.
+Use `--skip-scrape`. It clones the repo, reassembles from the committed cache (zero
+Firecrawl credits, no API key needed), and pushes. Useful after a template change.
 
 **Pages seem stale or site was redesigned?**
-Use `--force-refresh` to ignore all cached data and re-scrape everything from scratch.
+Use `--force-refresh` to ignore the cache and re-scrape everything.
 
-**Firecrawl rate limit errors (HTTP 429)?**
-The pipeline retries automatically with exponential backoff (up to 5 attempts per request). If it still fails, wait a few minutes and rerun — cached batches won't be repeated.
+**Pages disappeared from the site?**
+The pipeline tracks URLs that vanish from the map and deletes their page files after
+3 consecutive runs confirm them gone (guards against transient crawl failures).
 
-**"API key missing" or authentication errors?**
-Double-check the key starts with `fc-` and is set correctly. Get a free key at https://firecrawl.dev.
+**`gh` auth or push errors?**
+Run `gh auth status`; if not logged in, `gh auth login`. The owner must have permission
+to create/push the repo (use `--owner` for orgs you can write to).
 
-## 5. Install the Output Skill
+**Firecrawl rate limit (HTTP 429)?**
+The pipeline retries with exponential backoff. If it still fails, wait and rerun —
+cached batches won't repeat.
 
-When the pipeline finishes, it prints the exact install command with the real absolute path
-to the skill folder it just built. It looks like this (path will differ on your machine):
-
-```
-  Install / update skill in agents:
-
-    Claude Code:
-    npx skills add "/Users/yourname/path/to/output/example-com-website-search-skill" -g -y -a claude-code
-
-    All agents:
-    npx skills add "/Users/yourname/path/to/output/example-com-website-search-skill" -g -y
-```
-
-**Before running:** Show the user the command printed by the pipeline and ask:
-
-> "The skill folder is ready. Shall I install it now so your agents can search [domain] offline?"
-
-Only run the install command after the user confirms. Use the exact path from the pipeline
-output — do not use the example path shown above.
-
-### If `npx` fails
-
-`npx skills` requires Node.js. Check:
-
-```bash
-node --version 2>&1
-```
-
-If not found: tell the user "Node.js is required to install the skill. Download it from
-https://nodejs.org (LTS version) — it includes npx." Once they install it, re-run the
-install command.
-
-After installing, the user's agents can answer questions about the website offline.
-Re-run the pipeline and re-run the install command any time to pick up new pages.
+**"API key missing" or 401?**
+Check the key starts with `fc-`. Get a free key at https://firecrawl.dev.
 
 ## Cost
 
 1 Firecrawl credit (map) + ~5 credits per page scraped.
-Example: 100-page site ≈ 501 credits.
-Incremental re-runs only pay for new or changed pages.
+Example: 100-page site ≈ 501 credits. Incremental re-runs only pay for new pages.
+`--skip-scrape` costs 0 credits.
