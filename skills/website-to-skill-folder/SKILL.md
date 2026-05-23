@@ -39,6 +39,9 @@ Don't probe tools one-by-one. Run the bundled pre-flight script **once**. It che
 everything (Python, packages, git + identity, `gh` + auth, Node/npx, Firecrawl key) and
 prints a tagged report with a final `VERDICT`.
 
+> Use `python3` instead of `python` if `python` is missing (common on macOS/Linux), and
+> use the **same interpreter** for every command in this guide.
+
 ```bash
 python "$SKILL_DIR/scripts/preflight.py"
 ```
@@ -46,10 +49,10 @@ python "$SKILL_DIR/scripts/preflight.py"
 Each line is tagged: `[OK]`, `[FIX]` (auto-fixable), `[GUIDE]` (a command to run), or
 `[ASK]` (a value to provide at runtime). Act on the `VERDICT`:
 
-- **`VERDICT: READY`** → proceed. Ask the user only for the minimum: the **target URL**,
-  the **Firecrawl API key** (only if it's tagged `[ASK]`), and their **public/private**
-  preference. If the report shows `gh authenticated as <name>`, tell the user the repo
-  will be created under that account (or offer `--owner <org>`).
+- **`VERDICT: READY`** → proceed to the cost estimate (Step 3). Ask the user for the
+  minimum needed to dry-run: the **target URL** and the **Firecrawl API key** (only if
+  it's tagged `[ASK]`). Visibility and owner are decided just before the run (Step 4).
+  If the report shows `gh authenticated as <name>`, that's the account the repo lands under.
 
 - **`VERDICT: BLOCKED`** → help the user clear each flagged item, then re-run preflight:
   - `[FIX]` Python packages → offer to run it for them: `python "$SKILL_DIR/scripts/preflight.py" --fix`
@@ -71,58 +74,62 @@ your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit ca
 > The pipeline self-checks too: if it's run with a tool missing, it exits with the same
 > guidance instead of a stack trace. Pre-flight just lets you catch everything up front.
 
-## 3. Confirm Visibility and Scope
-
-Before running, confirm two things with the user (skip whichever they've already specified):
-
-1. **Visibility** — should the GitHub skill repo be **private** (default) or **public**?
-   Public repos can be installed by teammates with no auth; private repos require each
-   teammate to have GitHub access. To share with a team, you can also create the repo
-   under an org with `--owner <org>`.
-2. **Owner** — defaults to their own GitHub account. Use `--owner <org-or-user>` to host
-   it elsewhere (e.g. a shared org).
+## 3. Estimate Cost First (dry-run)
 
 **How the pipeline handles URLs:** It extracts the domain from any URL. A path like
 `/blog` or `/docs/api` is ignored — the **full domain** is always crawled. Subdomains
-like `blog.example.com` ARE different domains and produce separate skills.
+like `blog.example.com` ARE different domains and produce separate skills. Do not try to
+limit to a subdirectory or grep the URL list.
 
-**Always run `--dry-run` first** to discover the page count and cost (costs 1 map credit).
-The dry-run also syncs with GitHub, so for an existing repo it reports only *new* pages.
+**Always run `--dry-run` first** to discover the page count and cost (≤1 map credit). It
+syncs with GitHub too, so for an existing repo it reports only *new* pages — **a dry-run
+creates and changes nothing** on GitHub.
+
+> **About the key prefix:** only inline `FIRECRAWL_API_KEY="..."` (with the user's real
+> key) when pre-flight tagged the key `[ASK]`. If it was `[OK]`, the key is already
+> configured — **omit the prefix entirely**; passing a placeholder would override the real
+> key and cause a 401. This applies to every command below, including the run in Step 4.
 
 ```bash
 FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run
-# with a page limit:
+# with a page cap:
 FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run --max-pages 50
 ```
 
-Read `Total URLs` / `New` and the estimated cost, present them to the user, and only
-proceed after they approve.
+Read `Total URLs` / `New` and the estimated cost from the output, present them to the
+user, and continue only once they approve the spend.
 
 ## 4. Run the Pipeline
 
-Inline the skill path and API key so the command is self-contained. Use `--yes` when
-running as an agent (it auto-approves the cost prompt AND defaults new repos to private).
+One decision remains before the run: **how visible** the repo should be and **who owns it**.
+Confirm with the user (skip whatever they've already told you):
+
+- **Visibility** — **private** (default) or **public**? Public installs need no auth;
+  private requires each teammate to have repo access. Pass `--visibility public` for public.
+- **Owner** — defaults to their authenticated GitHub account (shown in the pre-flight
+  report). Pass `--owner <org-or-user>` to host it under a shared org instead.
+
+Then run it — inline the skill path and API key so the command is self-contained, and
+**always pass `--yes`** so it doesn't block on the interactive cost prompt:
 
 ```bash
+# default: private, under the authenticated account
 FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes
+# public, under an org
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --visibility public --owner my-org
 ```
 
-To make a new repo public, or host it under an org:
-
-```bash
-FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --visibility public
-FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --owner my-org
-```
-
-The pipeline clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, updates it,
-pushes, and installs it — all in one run.
+The pipeline clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, scrapes
+only new pages, deletes pages removed from the site, pushes, and installs it — all in one run.
 
 **IMPORTANT:**
-- Always include `--yes` when running from an AI agent. Without it, the pipeline prompts
-  for interactive cost and visibility confirmation, which will time out and cancel the run.
-- `--visibility` only applies when the repo is created the first time; it's ignored on
-  later updates (visibility is managed on GitHub after that).
-- Set a **10-minute timeout** on the Bash call. Example: `timeout: 600000` in tool params.
+- Always pass `--yes` from an agent. Without it the pipeline shows an interactive cost
+  prompt and, on non-interactive stdin, cancels the run. (`--yes` also defaults a new repo
+  to **private** — add `--visibility public` if the user wants it public.)
+- `--visibility` only applies when the repo is first created; it's ignored on later
+  updates (manage visibility on GitHub after that).
+- Set a **10-minute timeout** on the Bash call (e.g. `timeout: 600000`). Large sites take
+  several minutes (scraping + API polling).
 
 **Options:**
 
@@ -138,6 +145,7 @@ pushes, and installs it — all in one run.
 | `--force-refresh` | Ignore cache, re-scrape all pages |
 | `--no-install` | Push to GitHub but skip the npx install step |
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
+| `--keep-temp` | Keep the temp working dir after the run (debugging) |
 
 ## 5. After the Run
 
