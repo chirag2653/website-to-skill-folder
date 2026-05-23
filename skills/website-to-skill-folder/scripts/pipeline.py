@@ -58,15 +58,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
-from pydantic import BaseModel, field_validator
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
+# preflight is a stdlib-only sibling module; keep it importable even when the
+# pipeline is launched by absolute path from another directory.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+import preflight
+
+try:
+    import requests
+    from pydantic import BaseModel, field_validator
+    from tenacity import (
+        before_sleep_log,
+        retry,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
+    )
+except ImportError as _e:
+    sys.stderr.write(
+        f"\nERROR: a required Python package is missing ({_e.name}).\n"
+        f"  Install the pipeline's dependencies:\n"
+        f"    {sys.executable} -m pip install requests pydantic tenacity\n"
+        f"  Or run the pre-flight check, which can fix this for you:\n"
+        f"    python {os.path.join(_SCRIPT_DIR, 'preflight.py')} --fix\n\n"
+    )
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -251,6 +268,15 @@ class PipelineInput(BaseModel):
             self.description = f"a website at {self.domain}."
 
 
+def _tool_missing(tool: str, hint: str) -> None:
+    """Print actionable guidance for a missing required tool and exit cleanly."""
+    print(f"\nERROR: {tool} is required but was not found.")
+    print(f"  {hint}")
+    print(f"\n  For a full environment check and guidance, run:")
+    print(f"    python {os.path.join(_SCRIPT_DIR, 'preflight.py')}")
+    sys.exit(1)
+
+
 def parse_args() -> PipelineInput:
     """Parse CLI arguments and return validated PipelineInput."""
     parser = argparse.ArgumentParser(
@@ -378,20 +404,23 @@ def parse_args() -> PipelineInput:
     if args.dry_run and args.skip_scrape:
         parser.error("--dry-run and --skip-scrape are mutually exclusive")
 
-    # gh CLI is always required -- GitHub is the source of truth.
-    if subprocess.run(["gh", "--version"], capture_output=True, text=True).returncode != 0:
-        parser.error(
-            "gh CLI required. Install from https://cli.github.com and run `gh auth login`."
+    # Required external tools. Fail gracefully with actionable guidance instead
+    # of an argparse usage dump; point at preflight for the full picture.
+    if not preflight.git_installed():
+        _tool_missing("git", f"Install git: {preflight.install_hint('git')}")
+    if not preflight.gh_installed():
+        _tool_missing(
+            "gh (GitHub CLI)",
+            f"Install: {preflight.install_hint('gh')} — then run: gh auth login",
         )
 
     # npx is needed only when we will install (skipped for --dry-run / --no-install).
     will_install = not args.no_install and not args.dry_run
-    if will_install:
-        if subprocess.run(["npx", "--version"], capture_output=True, text=True).returncode != 0:
-            parser.error(
-                "Node.js required to install the skill. Install from https://nodejs.org, "
-                "or pass --no-install."
-            )
+    if will_install and not preflight.node_available():
+        _tool_missing(
+            "Node.js / npx",
+            f"Install: {preflight.install_hint('node')} — or re-run with --no-install",
+        )
 
     try:
         return PipelineInput(
@@ -2107,6 +2136,18 @@ def main():
 
     owner = resolve_owner(config.owner)
     repo_name = config.repo_name
+
+    # Gate on git identity BEFORE any scraping, so we never spend Firecrawl
+    # credits and then fail at commit time. (dry-run never commits.)
+    if not config.dry_run:
+        identity_ok, _, _ = preflight.git_identity()
+        if not identity_ok:
+            print("\nERROR: git commit identity is not configured.")
+            print("  The skill is committed to GitHub, so git needs your name + email:")
+            print('    git config --global user.name "Your Name"')
+            print('    git config --global user.email "you@example.com"')
+            print(f"\n  Full environment check: python {os.path.join(_SCRIPT_DIR, 'preflight.py')}")
+            sys.exit(1)
 
     # Determine mode label for display
     if config.dry_run:

@@ -15,6 +15,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--output` flags. There is exactly one output target: the GitHub repo.
 
 ### Added
+- **`preflight.py`** — a stdlib-only environment check that runs before the pipeline. It
+  probes Python, packages, git + commit identity, `gh` + auth (and shows which account repos
+  land under), Node/npx, and the Firecrawl key; tags each as OK/FIX/GUIDE/ASK with
+  platform-aware install hints and a clear READY/BLOCKED verdict. `--fix` auto-installs the
+  Python packages. SKILL.md now drives onboarding from this single report.
+- Graceful failures in `pipeline.py`: third-party imports degrade to an actionable message
+  instead of a traceback; missing `git`/`gh`/Node exit with guidance (not an argparse dump);
+  git commit identity is verified **before** any scraping so a misconfigured git never wastes
+  Firecrawl credits.
 - Generated repos now include a production-grade **README.md** landing page (install command,
   visibility-aware "share with teammates" section, update instructions, what's-inside).
 - Visibility-aware orchestration: the final summary and README state whether the repo is

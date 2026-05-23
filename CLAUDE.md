@@ -27,6 +27,7 @@ repo root/                              ← dev scaffolding (NOT installed)
         ├── SKILL.md                    ← agent-facing instructions
         └── scripts/
             ├── pipeline.py             ← the pipeline (~2400 lines)
+            ├── preflight.py            ← stdlib-only environment check (run before the pipeline)
             ├── skill-md.template       ← template for generated skills' SKILL.md
             ├── .env.local              ← API key (gitignored, create from .env.local.example)
             └── .env.local.example      ← API key template
@@ -142,12 +143,26 @@ This template produces the SKILL.md that goes into every generated website searc
 
 ### Quick validation (no API calls, no network)
 ```bash
-# Syntax check
-python -c "import py_compile; py_compile.compile('skills/website-to-skill-folder/scripts/pipeline.py', doraise=True)"
+# Syntax check (both scripts)
+python -c "import py_compile; py_compile.compile('skills/website-to-skill-folder/scripts/preflight.py', doraise=True); py_compile.compile('skills/website-to-skill-folder/scripts/pipeline.py', doraise=True)"
 
 # Verify --help works (imports all dependencies)
 python skills/website-to-skill-folder/scripts/pipeline.py --help
+
+# Environment pre-flight (stdlib only — runs even with deps missing)
+python skills/website-to-skill-folder/scripts/preflight.py        # report
+python skills/website-to-skill-folder/scripts/preflight.py --fix  # auto-install pip deps
 ```
+
+### Graceful-failure design
+The pipeline must never dump a traceback or argparse usage on a missing prerequisite:
+- `preflight.py` is **stdlib-only** so it runs even when requests/pydantic/tenacity are absent.
+- `pipeline.py` wraps its third-party imports (clean message + exit), gates required tools
+  via `preflight.*` helpers (`_tool_missing`), checks **git identity before scraping** (so a
+  misconfigured git never wastes Firecrawl credits), and `resolve_owner`/`get_api_key` already
+  handle `gh`-not-authed and missing-key gracefully.
+- When adding a new prerequisite, add the check to `preflight.collect()` AND gate it in
+  `pipeline.py` so direct runs stay graceful.
 
 Live runs require the `gh` CLI (authenticated) and a Firecrawl key, since every run
 syncs with GitHub. To exercise the file-producing logic offline, drive `assemble_pages()`,

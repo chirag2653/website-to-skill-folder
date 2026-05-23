@@ -33,61 +33,43 @@ SKILL_DIR="$HOME/.agents/skills/website-to-skill-folder"
 echo "Skill dir: $SKILL_DIR"
 ```
 
-## 2. Pre-flight Checks
+## 2. Pre-flight — run one check, then act on it
 
-Run these in order before the pipeline. Fix anything missing before proceeding — do not skip.
-
-### Python (required: 3.8+)
-
-```bash
-python --version 2>&1 || python3 --version 2>&1
-```
-
-- If `python` is Python 2 or not found, use `python3` for all commands below.
-- If neither is found: tell the user to install Python 3.8+ and stop.
-
-### Python packages (one-time)
+Don't probe tools one-by-one. Run the bundled pre-flight script **once**. It checks
+everything (Python, packages, git + identity, `gh` + auth, Node/npx, Firecrawl key) and
+prints a tagged report with a final `VERDICT`.
 
 ```bash
-python -c "import requests, pydantic, tenacity; print('OK')" 2>&1
+python "$SKILL_DIR/scripts/preflight.py"
 ```
 
-If `ModuleNotFoundError`: install and retry before proceeding.
+Each line is tagged: `[OK]`, `[FIX]` (auto-fixable), `[GUIDE]` (a command to run), or
+`[ASK]` (a value to provide at runtime). Act on the `VERDICT`:
 
-```bash
-pip install requests pydantic tenacity
-```
+- **`VERDICT: READY`** → proceed. Ask the user only for the minimum: the **target URL**,
+  the **Firecrawl API key** (only if it's tagged `[ASK]`), and their **public/private**
+  preference. If the report shows `gh authenticated as <name>`, tell the user the repo
+  will be created under that account (or offer `--owner <org>`).
 
-### GitHub CLI (required — GitHub is the source of truth)
+- **`VERDICT: BLOCKED`** → help the user clear each flagged item, then re-run preflight:
+  - `[FIX]` Python packages → offer to run it for them: `python "$SKILL_DIR/scripts/preflight.py" --fix`
+  - `[GUIDE]` git identity → if they give you a name/email, run the printed
+    `git config --global ...` commands for them.
+  - `[GUIDE]` `gh` not installed → share the printed install command for their OS.
+  - `[GUIDE]` `gh` not authenticated → ask the user to run `gh auth login` themselves
+    (it's interactive — you can't do it for them).
+  - `[GUIDE]` Node missing → either help install it, or note you'll run with `--no-install`.
 
-```bash
-gh --version >/dev/null 2>&1 && gh auth status 2>&1 | head -1
-```
+  **Do not run the pipeline while BLOCKED** — it will fail or waste Firecrawl credits.
 
-- If `gh` is not found: tell the user to install it from https://cli.github.com and stop.
-- If `gh auth status` reports "not logged in": tell the user to run `gh auth login` and stop.
+Be proactive but not noisy: when everything is `OK`, just confirm you're set and ask for
+the URL + key. Only surface setup steps for the items that are actually missing.
 
-The pipeline derives the GitHub owner from the authenticated user automatically.
-To target an org or a different account instead, pass `--owner <name>`.
+When you need the key, ask in one line: "What website do you want to convert, and what's
+your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
 
-### Node.js (required for install)
-
-```bash
-node --version 2>&1
-```
-
-If not found: tell the user to install Node.js from https://nodejs.org (LTS) — it includes
-npx. The skill is installed via npx, so this is required unless you run with `--no-install`.
-
-### Firecrawl API key
-
-```bash
-python -c "import os; print('set' if os.environ.get('FIRECRAWL_API_KEY') else 'missing')"
-```
-
-If missing: **stop and ask the user for their Firecrawl API key AND the target website in one question.**
-
-Tell them: "What website do you want to convert, and what's your Firecrawl API key? Get a free key at https://firecrawl.dev — no credit card required."
+> The pipeline self-checks too: if it's run with a tool missing, it exits with the same
+> guidance instead of a stack trace. Pre-flight just lets you catch everything up front.
 
 ## 3. Confirm Visibility and Scope
 
