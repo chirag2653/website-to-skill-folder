@@ -1771,6 +1771,8 @@ def prepare_work_dir(
             res = subprocess.run(["git", "clone", repo_url, work_dir])
             if res.returncode != 0:
                 print("ERROR: git clone failed. Check your gh auth and repo access.")
+                if is_temp:
+                    shutil.rmtree(work_dir, ignore_errors=True)
                 sys.exit(1)
     else:
         if not has_git:
