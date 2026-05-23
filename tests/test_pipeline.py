@@ -61,6 +61,34 @@ check("_plural(1,'page') == '1 page'", pipeline._plural(1, "page") == "1 page", 
 check("_plural(2,'page') == '2 pages'", pipeline._plural(2, "page") == "2 pages", pipeline._plural(2, "page"))
 check("_plural(0,'page') == '0 pages'", pipeline._plural(0, "page") == "0 pages", pipeline._plural(0, "page"))
 
+# --- Unscraped-backfill detection: which "unchanged" URLs have no cached page?
+#     Shared by the dry-run cost estimate AND the real-run scrape queue so they
+#     can't diverge (the dry-run previously omitted this and under-quoted cost). ---
+_unchanged = ["https://x.com/a", "https://x.com/b", "https://x.com/c"]
+_cached = [{"metadata": {"sourceURL": "https://x.com/a"}}]  # only /a has scrape data
+_unscraped = pipeline.unscraped_unchanged_urls(_unchanged, _cached)
+check("unscraped_unchanged_urls finds the gap", _unscraped == ["https://x.com/b", "https://x.com/c"], str(_unscraped))
+check("unscraped_unchanged_urls empty when all cached",
+      pipeline.unscraped_unchanged_urls(["https://x.com/a"], _cached) == [], "expected []")
+
+# --- Subprocess output must decode as UTF-8 (not the Windows cp1252 default),
+#     or a non-cp1252 byte in gh/git output crashes the reader thread. ---
+sub_calls = []
+class _CP:
+    returncode = 0
+    stdout = "chirag2653"
+def _fake_run(cmd, **kw):
+    sub_calls.append(kw)
+    return _CP()
+pipeline.subprocess.run = _fake_run
+pipeline.repo_exists("o", "r")
+pipeline.resolve_owner(None)
+pipeline.get_repo_visibility("o", "r")
+text_calls = [k for k in sub_calls if k.get("text") or k.get("capture_output")]
+check("all captured subprocess calls set encoding=utf-8",
+      len(text_calls) >= 3 and all(k.get("encoding") == "utf-8" for k in text_calls),
+      str([(k.get("capture_output"), k.get("text"), k.get("encoding")) for k in sub_calls]))
+
 passed = sum(results)
 print(f"\n{'='*48}\n{passed}/{len(results)} passed")
 sys.exit(0 if passed == len(results) else 1)

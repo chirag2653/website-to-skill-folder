@@ -97,15 +97,35 @@ FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://examp
 FIRECRAWL_API_KEY="fc-key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --dry-run --max-pages 50
 ```
 
-Read `Total URLs` / `New` and the estimated cost from the output, present them to the
-user, and continue only once they approve the spend.
+Read `Total URLs`, `New`, any `Backfill` line, and the estimated cost; present them and
+continue only once the user approves the spend. Notes:
+
+- **"Already up to date"** in the summary (0 new, 0 backfill, 0 deleted) means the skill is
+  current — tell the user and **stop**. Don't run, don't prompt for a spend.
+- **A `Backfill: N` line** means N pages were mapped on an earlier run but never scraped
+  (e.g. a prior `--max-pages` run). The real run *will* scrape them and the estimate already
+  includes them — so the credit figure can be much larger than `New` alone implies. Relay the
+  total, not just the new-page count.
+- **`--max-pages N` keeps the first N URLs in map order — not a curated "most important" set,
+  and map order can drift slightly between runs.** Capping a large site leaves the remaining
+  pages to be backfilled on a later uncapped run. Only cap when the user explicitly wants to
+  limit cost or size.
 
 ## 4. Run the Pipeline
 
-For a **brand-new** skill, confirm one thing first: **private** (default) or **public**?
-(Public installs need no auth; private needs repo access. `--visibility public` for public;
-`--owner <org>` to host under a shared org.) For an **update** to a skill that already
-exists, **don't re-ask** — visibility is fixed; just run.
+**New vs. update is decided by whether the GitHub repo exists** — the dry-run already showed
+this (it printed `GitHub repo: …` and either cloned it or said it "will create" the repo).
+Do NOT infer it from whether the skill is installed locally: a local install can exist for a
+repo that was since deleted.
+
+For a **brand-new** skill, confirm just the one undecided axis: **private** (default) or
+**public**? (Public installs need no auth; private needs repo access. `--visibility public`
+for public; `--owner <org>` to host under a shared org.) For an **update** to a repo that
+already exists, **don't re-ask** — visibility is fixed; just run.
+
+Don't re-ask the **page cap** if the user already gave one, and don't bundle the cap into the
+visibility question — they're independent axes. Ask visibility on its own; treat a cap the
+user already stated as settled.
 
 Run it non-interactively so nothing blocks the terminal. Pass `--yes` (auto-approves the
 cost you already previewed) and **`--no-install`** — the run pushes to GitHub now; installing
@@ -163,7 +183,8 @@ If **yes**, install it from GitHub:
 npx skills add {owner}/skill-folder-{skill_name} -g --all
 ```
 
-Then **validate** it actually landed — don't trust the exit code alone:
+Then **validate** it actually landed — don't trust the exit code alone. Run the check as its
+**own** Bash call so its one-line result isn't buried in the `npx` spinner output:
 
 ```bash
 ls "$HOME/.agents/skills/{skill_name}/SKILL.md" >/dev/null 2>&1 && echo "INSTALLED" || echo "NOT FOUND"
@@ -174,6 +195,14 @@ ls "$HOME/.agents/skills/{skill_name}/SKILL.md" >/dev/null 2>&1 && echo "INSTALL
   it offline and cite the source pages."
 - **NOT FOUND** → share the manual command, confirm Node is present (`node --version`), and
   see Troubleshooting.
+
+The real skill lives in `~/.agents/skills/{skill_name}/`; each agent (Claude Code, etc.) gets
+a symlink into it. If the user asks specifically about the **Claude Code symlink** (or "is it
+wired into Claude Code / a new session?"), confirm it resolves:
+
+```bash
+readlink "$HOME/.claude/skills/{skill_name}" 2>/dev/null && echo "symlink OK" || echo "Claude Code reads ~/.agents directly"
+```
 
 If **no**, leave it — the skill is safe on GitHub and can be installed any time with the
 command above. (Repo URL → `{owner}/skill-folder-{skill_name}`; the skill installs to

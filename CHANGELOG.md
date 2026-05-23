@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Dry-run cost estimate now includes the unscraped backfill.** When an earlier run mapped
+  URLs but never scraped them (e.g. a capped `--max-pages` run), the real run backfills them —
+  but `--dry-run` ignored them and under-quoted (a "~6 credit" dry-run became a ~386 credit
+  run). Dry-run and the real run now share one `unscraped_unchanged_urls()` helper, so the
+  estimate matches; a `Backfill: N` line is shown when relevant.
+- **No more `UnicodeDecodeError` traceback on Windows.** The `gh`/`git` subprocess calls
+  (`gh api user`, `gh repo view` ×2, `git commit`) and `preflight.py`'s `_run` now decode child
+  output as UTF-8 (`errors="replace"`) instead of the cp1252 locale default, which crashed a
+  reader thread on any non-cp1252 byte (e.g. a `←`/em-dash in the repo README) and dumped a
+  traceback ahead of every run's real output.
+- **Dry-run "0 new" now says "Already up to date — nothing to scrape or remove"** instead of
+  the misleading "rerun without --dry-run".
+- **SKILL.md guidance:** new-vs-update is keyed off GitHub repo existence (not local install
+  presence); the agent no longer re-asks an already-given page cap or bundles it with the
+  visibility question; `--max-pages` is documented as "first N in map order" (non-curated,
+  order can drift); Step 5 adds an optional Claude Code symlink check and runs the install
+  validation as its own command so it isn't buried in `npx` spinner output.
 - **Incremental re-runs now detect just-published pages.** The map step always requests a
   fresh URL list (`ignoreCache: true`) instead of only on `--force-refresh`. Firecrawl's
   `/map` caches results for several minutes, so a re-run shortly after publishing a page

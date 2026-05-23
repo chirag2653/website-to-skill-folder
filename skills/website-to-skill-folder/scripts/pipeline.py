@@ -934,6 +934,18 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
+def unscraped_unchanged_urls(unchanged_urls: list[str], existing_pages: list[dict]) -> list[str]:
+    """URLs the map calls 'unchanged' but for which we have NO cached page yet.
+
+    Happens when an earlier run mapped a URL but never scraped it (e.g. a capped
+    `--max-pages` run, or a crash mid-scrape). Both the dry-run cost estimate and
+    the real-run scrape queue use this so they agree on what will actually be
+    scraped — the dry-run previously ignored these and under-quoted the cost.
+    """
+    cached = {p.get("metadata", {}).get("sourceURL", "") for p in existing_pages}
+    return [u for u in unchanged_urls if u not in cached]
+
+
 # ---------------------------------------------------------------------------
 # Step 1: Map -- discover all URLs
 # ---------------------------------------------------------------------------
@@ -1763,7 +1775,7 @@ def resolve_owner(explicit_owner: str | None) -> str:
         return explicit_owner
     result = subprocess.run(
         ["gh", "api", "user", "--jq", ".login"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     login = result.stdout.strip()
     if result.returncode != 0 or not login:
@@ -1777,7 +1789,7 @@ def repo_exists(owner: str, repo_name: str) -> bool:
     """True if the GitHub repo already exists and is visible to the user."""
     result = subprocess.run(
         ["gh", "repo", "view", f"{owner}/{repo_name}"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return result.returncode == 0
 
@@ -1787,7 +1799,7 @@ def get_repo_visibility(owner: str, repo_name: str) -> str | None:
     result = subprocess.run(
         ["gh", "repo", "view", f"{owner}/{repo_name}",
          "--json", "visibility", "-q", ".visibility"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     vis = result.stdout.strip().lower()
     return vis if vis in ("public", "private") else None
@@ -2044,7 +2056,7 @@ def _run_git_push(
     )
     commit = subprocess.run(
         ["git", "commit", "-m", commit_msg],
-        cwd=work_dir, capture_output=True, text=True,
+        cwd=work_dir, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     nothing_to_commit = (
         commit.returncode != 0
@@ -2296,8 +2308,20 @@ def _run_pipeline(
             new_urls = len(map_result["new_urls"])
             unchanged = len(map_result["unchanged_urls"])
             deleted = len(map_result["deleted_urls"])
-            pages_to_scrape = total_urls if config.force_refresh else new_urls
-            scrape_cost = pages_to_scrape * 5
+
+            # Account for pages the map calls "unchanged" but that were never
+            # actually scraped (e.g. an earlier capped --max-pages run). The real
+            # run backfills these, so the estimate must include them or it lies
+            # — this is what made a "~6 credit" dry-run become a ~386 credit run.
+            backfill = 0
+            if not config.force_refresh and map_result["unchanged_urls"]:
+                existing = load_existing_pages(map_result["unchanged_urls"], workspace_dir)
+                backfill = len(unscraped_unchanged_urls(map_result["unchanged_urls"], existing))
+
+            pages_to_scrape = total_urls if config.force_refresh else new_urls + backfill
+            capped = bool(config.max_pages and pages_to_scrape > config.max_pages)
+            scrape_count = config.max_pages if capped else pages_to_scrape
+            scrape_cost = scrape_count * 5
 
             print(f"\n{'='*60}")
             print(f"DRY RUN — summary (no scraping performed)")
@@ -2307,13 +2331,18 @@ def _run_pipeline(
             print(f"  New:          {new_urls}")
             print(f"  Unchanged:    {unchanged}")
             print(f"  Deleted:      {deleted}")
-            if config.max_pages and pages_to_scrape > config.max_pages:
+            if backfill:
+                print(f"  Backfill:     {backfill} (mapped earlier but never scraped)")
+            if capped:
                 print(f"  Max pages:    {config.max_pages} (would cap scraping)")
-                pages_to_scrape = config.max_pages
-                scrape_cost = pages_to_scrape * 5
             print(f"\n  Estimated cost to scrape: ~{1 + scrape_cost} Firecrawl credits")
-            print(f"    (1 credit for map already used + ~{scrape_cost} for {_plural(pages_to_scrape, 'page')})")
-            print(f"\n  To proceed: rerun without --dry-run")
+            print(f"    (1 credit for map already used + ~{scrape_cost} for {_plural(scrape_count, 'page')})")
+            if scrape_count == 0 and deleted == 0:
+                print(f"\n  Already up to date — nothing to scrape or remove.")
+            elif scrape_count == 0:
+                print(f"\n  Nothing to scrape; {_plural(deleted, 'page')} would be removed — rerun without --dry-run to apply.")
+            else:
+                print(f"\n  To proceed: rerun without --dry-run")
             sys.exit(0)
 
         # Step 2: Determine what to scrape
@@ -2357,18 +2386,13 @@ def _run_pipeline(
         # Without this check, the pipeline would silently produce an empty/
         # incomplete skill folder because it thinks all URLs are "cached".
         if not config.force_refresh and map_result.get("unchanged_urls"):
-            cached_page_urls = {
-                p.get("metadata", {}).get("sourceURL", "")
-                for p in existing_pages
-            }
-            unscraped = [
-                u for u in map_result["unchanged_urls"]
-                if u not in cached_page_urls
-            ]
+            unscraped = unscraped_unchanged_urls(
+                map_result["unchanged_urls"], existing_pages
+            )
             if unscraped:
                 urls_to_scrape.extend(unscraped)
                 print(
-                    f"\n  Found {len(unscraped)} previously-mapped URL(s) with "
+                    f"\n  Found {_plural(len(unscraped), 'previously-mapped URL')} with "
                     f"no scrape data — adding to scrape queue"
                 )
 
