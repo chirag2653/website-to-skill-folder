@@ -1732,6 +1732,17 @@ def repo_exists(owner: str, repo_name: str) -> bool:
     return result.returncode == 0
 
 
+def get_repo_visibility(owner: str, repo_name: str) -> str | None:
+    """Return 'public' or 'private' for an existing repo, or None if unknown."""
+    result = subprocess.run(
+        ["gh", "repo", "view", f"{owner}/{repo_name}",
+         "--json", "visibility", "-q", ".visibility"],
+        capture_output=True, text=True,
+    )
+    vis = result.stdout.strip().lower()
+    return vis if vis in ("public", "private") else None
+
+
 def prepare_work_dir(
     work_dir_opt: str | None, owner: str, repo_name: str
 ) -> tuple[str, bool, bool]:
@@ -1803,18 +1814,87 @@ def prompt_visibility(visibility_opt: str | None, auto_approve: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _share_note(visibility: str | None) -> str:
+    """One-line note describing who can install, given repo visibility."""
+    if visibility == "public":
+        return "This repo is public — anyone can run the command above, no GitHub access needed."
+    if visibility == "private":
+        return ("This repo is private — give teammates read access first "
+                "(add them as collaborators, or host it in a shared org).")
+    return ("If this repo is public, anyone can run the command above. "
+            "If it's private, teammates need read access to it first.")
+
+
 def _generate_repo_scaffolding(
     config,
     owner: str,
     repo_name: str,
     work_dir: str,
+    visibility: str | None,
     page_count: int,
     new_page_count: int,
     total_urls_mapped: int,
 ) -> None:
-    """Generate .gitignore, CLAUDE.md, and dev/notes.md in the repo root."""
+    """Generate README.md, .gitignore, CLAUDE.md, and dev/notes.md in the repo root."""
     domain = config.domain
     skill_name = config.skill_name
+    install_cmd = f"npx skills add {owner}/{repo_name} -g --all"
+
+    # README.md: the GitHub landing page. Write only if it doesn't exist.
+    readme_path = os.path.join(work_dir, "README.md")
+    if not os.path.exists(readme_path):
+        readme = (
+            f"# {domain} — website search skill\n"
+            f"\n"
+            f"An installable AI-agent skill that makes **{domain}** searchable offline.\n"
+            f"It contains {page_count} pages of the site as markdown with keyword-rich\n"
+            f"frontmatter; agents search it locally with ripgrep — no live browsing.\n"
+            f"\n"
+            f"_Produced by [website-to-skill-folder](https://github.com/chirag2653/website-to-skill-folder)._\n"
+            f"\n"
+            f"## Install\n"
+            f"\n"
+            f"Requires [Node.js](https://nodejs.org). In any AI agent (Claude Code, Gemini CLI, Cursor, Codex, …):\n"
+            f"\n"
+            f"```bash\n"
+            f"{install_cmd}\n"
+            f"```\n"
+            f"\n"
+            f"That's it. Your agent can now answer questions about {domain} offline,\n"
+            f"with citations back to the original page URLs. Re-run the same command\n"
+            f"any time to pull the latest version.\n"
+            f"\n"
+            f"## Share with your team\n"
+            f"\n"
+            f"Send teammates the exact same command:\n"
+            f"\n"
+            f"```bash\n"
+            f"{install_cmd}\n"
+            f"```\n"
+            f"\n"
+            f"{_share_note(visibility)}\n"
+            f"\n"
+            f"## Update\n"
+            f"\n"
+            f"This skill stays current by re-running the generator, which clones this repo,\n"
+            f"scrapes only new pages, deletes pages removed from the site, and pushes back:\n"
+            f"\n"
+            f"```bash\n"
+            f'FIRECRAWL_API_KEY="fc-..." python path/to/pipeline.py https://{domain} --owner {owner}\n'
+            f"```\n"
+            f"\n"
+            f"## What's inside\n"
+            f"\n"
+            f"```\n"
+            f"{skill_name}/   ← the installable skill (this is what npx installs)\n"
+            f"  ├── SKILL.md  ← how agents search the site\n"
+            f"  └── pages/    ← one markdown file per page\n"
+            f"dev/_workspace/ ← scrape cache (state.json) that powers incremental updates\n"
+            f"```\n"
+        )
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(readme)
+        print(f"  Created README.md")
 
     # Compute credit estimate
     if config.skip_scrape:
@@ -1892,6 +1972,7 @@ def _generate_repo_scaffolding(
             f"├── dev/                    <- dev artifacts, NOT installed\n"
             f"│   ├── _workspace/         <- scrape cache (state.json) — the source of truth for re-runs\n"
             f"│   └── notes.md\n"
+            f"├── README.md              <- GitHub landing page (install / share / update), NOT installed\n"
             f"├── CLAUDE.md               <- this file, NOT installed\n"
             f"└── .gitignore\n"
             f"```\n"
@@ -2345,19 +2426,23 @@ def _run_pipeline(
     )
     print(f"  Wrote SKILL.md")
 
-    # Step 4: Generate repo scaffolding (CLAUDE.md, dev/notes.md, .gitignore)
+    # Step 4: Resolve visibility (chosen for new repos, looked up for existing)
+    # so the README and final orchestration can state it accurately.
+    if not repo_existed:
+        visibility = prompt_visibility(config.visibility, config.yes)
+    else:
+        visibility = get_repo_visibility(owner, repo_name)
+
+    # Step 4: Generate repo scaffolding (README.md, CLAUDE.md, dev/notes.md, .gitignore)
     print(f"\n{'='*60}")
     print(f"STEP 4: Scaffolding -- generating repo files")
     print(f"{'='*60}")
     _generate_repo_scaffolding(
-        config, owner, repo_name, work_dir,
+        config, owner, repo_name, work_dir, visibility,
         page_count, new_page_count, total_urls_mapped,
     )
 
-    # Step 5: Push to GitHub (resolve visibility first for brand-new repos)
-    visibility = None
-    if not repo_existed:
-        visibility = prompt_visibility(config.visibility, config.yes)
+    # Step 5: Push to GitHub
     pushed = _run_git_push(
         config, owner, repo_name, work_dir, visibility, repo_existed, page_count,
     )
@@ -2383,20 +2468,30 @@ def _run_pipeline(
             f"(1 map + {new_page_count} pages x 5 scrape)"
         )
 
-    # Summary
+    # Summary — clear, copy-paste orchestration for install + share + update.
+    repo_url = f"https://github.com/{owner}/{repo_name}"
+    install_cmd = f"npx skills add {owner}/{repo_name} -g --all"
+    vis_label = f"  ({visibility})" if visibility else ""
+    owner_flag = f" --owner {owner}" if config.owner else ""
+
     print(f"\n{'='*60}")
-    print(f"DONE")
+    print(f"DONE — your {config.domain} search skill is live on GitHub")
     print(f"{'='*60}")
-    print(f"  GitHub repo:  https://github.com/{owner}/{repo_name}")
+    print(f"  Repo:         {repo_url}{vis_label}")
     print(f"  Pages:        {page_count}")
     print(f"  Credits used: {credits_str}")
+    print(f"")
     if installed:
-        print(f"  Installed:    ~/.agents/skills/{config.skill_name}/")
+        print(f"  Installed for you:  ~/.agents/skills/{config.skill_name}/")
     else:
-        print(f"\n  Install in any agent (their own GitHub access applies if private):")
-        print(f"    npx skills add {owner}/{repo_name} -g --all")
-    print(f"\n  Update anytime (clones, scrapes new, deletes removed, pushes):")
-    owner_flag = f" --owner {owner}" if config.owner else ""
+        print(f"  Install it in your agent:")
+        print(f"    {install_cmd}")
+    print(f"")
+    print(f"  Share with teammates — send them this one command:")
+    print(f"    {install_cmd}")
+    print(f"    {_share_note(visibility)}")
+    print(f"")
+    print(f"  Update later (clones the repo, scrapes only new pages, deletes removed):")
     print(f"    python pipeline.py https://{config.domain}{owner_flag}")
     print(f"{'='*60}")
 

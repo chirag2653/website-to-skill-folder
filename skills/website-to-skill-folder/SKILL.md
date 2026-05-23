@@ -159,17 +159,27 @@ pushes, and installs it — all in one run.
 
 ## 5. After the Run
 
-When it finishes, the pipeline prints the GitHub repo URL and (unless `--no-install`)
-confirms the skill was installed at `~/.agents/skills/{skill_name}/`. The user's agents
-can now search the site offline. Re-run the same command any time to pick up new pages.
+The pipeline ends with a `DONE` block containing everything needed — relay it to the
+user, don't paraphrase the commands. It includes:
 
-To let a teammate install it, give them:
+- **Repo URL + visibility** (e.g. `https://github.com/{owner}/skill-folder-{skill_name}  (private)`).
+  The repo also has a generated `README.md` landing page with the same install/share info.
+- **Install status** — unless `--no-install`, the skill is already installed at
+  `~/.agents/skills/{skill_name}/`, so the user's agents can search the site offline now.
+- **Share command** — the single `npx skills add {owner}/skill-folder-{skill_name} -g --all`
+  to hand to teammates.
 
-```bash
-npx skills add {owner}/skill-folder-{skill_name} -g --all
-```
+Report it to the user roughly like this:
 
-(For a private repo, the teammate needs their own GitHub access to it.)
+> "Done — your {domain} skill is live at {repo_url} ({visibility}) and installed locally.
+> To share it, send teammates: `npx skills add {owner}/skill-folder-{skill_name} -g --all`
+> — {public: anyone can run it / private: they'll need read access to the repo first}.
+> Re-run me any time to update it; I'll only scrape new pages."
+
+If the repo is **private** and the user wants teammates to install it, remind them to grant
+access (add collaborators, or have used `--owner <org>` so the team already has access).
+If they want a **public**, no-auth-needed share link, the repo can be recreated with
+`--visibility public` (or flipped on GitHub).
 
 ## Troubleshooting & Recovery
 

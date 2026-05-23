@@ -15,6 +15,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--output` flags. There is exactly one output target: the GitHub repo.
 
 ### Added
+- Generated repos now include a production-grade **README.md** landing page (install command,
+  visibility-aware "share with teammates" section, update instructions, what's-inside).
+- Visibility-aware orchestration: the final summary and README state whether the repo is
+  public or private (`get_repo_visibility()` for existing repos), and always surface a
+  copy-paste **share command** for teammates alongside install + update.
 - `--owner NAME` — GitHub account/org for the repo (defaults to the authenticated `gh` user).
 - `--visibility public|private` — visibility for a newly created repo. Defaults to a prompt
   (or `private` with `--yes`). Ignored when the repo already exists.
