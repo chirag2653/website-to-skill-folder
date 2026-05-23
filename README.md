@@ -131,7 +131,7 @@ skill-folder-{skill_name}/   ← git repo in your GitHub account
 ├── dev/
 │   ├── _workspace/          ← scrape cache (state.json) — committed, powers incremental re-runs
 │   └── notes.md
-├── CLAUDE.md
+├── README.md                ← GitHub landing page (install / share / update); the single root doc
 └── .gitignore
 ```
 

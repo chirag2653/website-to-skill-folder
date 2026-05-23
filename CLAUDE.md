@@ -92,8 +92,8 @@ skill-folder-{skill_name}/   ← git repo root
 │   ├── _workspace/     ← scrape cache (state.json, map-urls.txt) — COMMITTED; the
 │   │                      source of truth that makes incremental re-runs work anywhere
 │   └── notes.md        ← auto-generated run log
-├── README.md          ← GitHub landing page: install / share / update (the onboarding doc)
-├── CLAUDE.md           ← repo dev context, NOT installed
+├── README.md          ← single root doc: GitHub landing page (install / share / update);
+│                         renders on GitHub and is readable by agents. NOT installed.
 └── .gitignore          ← excludes dev/_workspace/batch-response.json
 ```
 
@@ -119,7 +119,7 @@ cleans up the temp dir. Key sections:
 - `assemble_pages()` — Step 3: write markdown files with frontmatter
 - `generate_skill_md()` — render the SKILL.md template
 - `prompt_visibility()` / `get_repo_visibility()` — resolve public/private (chosen for new repos, looked up for existing) before scaffolding/push
-- `_generate_repo_scaffolding()` — Step 4: write README.md (GitHub landing page), .gitignore, CLAUDE.md, dev/notes.md
+- `_generate_repo_scaffolding()` — Step 4: write README.md (the single root doc), .gitignore, dev/notes.md; removes any stale CLAUDE.md left by older generator versions
 - `_share_note()` — visibility-aware one-liner used in the README + final summary
 - `_run_git_push()` — Step 5: commit + push; `gh repo create --{visibility}` for new repos
 - `_run_install()` — Step 6: npx skills remove + add (from GitHub)

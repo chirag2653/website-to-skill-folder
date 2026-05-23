@@ -32,6 +32,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr so the report's em-dashes render correctly (and never
+# crash with UnicodeEncodeError) on Windows consoles defaulting to cp1252. No-op where
+# stdout is already UTF-8 or not reconfigurable.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 PACKAGES = ["requests", "pydantic", "tenacity"]
 
 TAGS = {"ok": "OK", "fix": "FIX", "guide": "GUIDE", "ask": "ASK"}

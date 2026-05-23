@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Windows console encoding** — `pipeline.py` and `preflight.py` now force UTF-8 on
+  stdout/stderr at startup, so status lines containing em-dashes/arrows/box-drawing
+  characters render correctly (previously `�`) and never crash with `UnicodeEncodeError`
+  on Windows consoles defaulting to cp1252.
+- **Dry-run cost label** — the dry-run summary's cost breakdown now reports the *capped*
+  page count when `--max-pages` applies (e.g. "~50 for 10 pages") instead of contradicting
+  its own credit figure by printing the total discovered URL count.
+
+### Changed
+- **Generated repos now ship a single root doc: `README.md`.** CLAUDE.md is no longer
+  generated (it was ~80% redundant with README and, unlike README, doesn't render on the
+  GitHub repo page). The scaffolding step also removes any stale CLAUDE.md left by older
+  generator versions, so updated repos converge on the README-only layout.
+
 ### Changed (BREAKING) — GitHub-first architecture
 - The pipeline is now **GitHub-first**. GitHub is the source of truth: every run clones
   `github.com/{owner}/skill-folder-{skill_name}` into a temp directory, updates it

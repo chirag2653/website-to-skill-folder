@@ -58,6 +58,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+# Force UTF-8 on stdout/stderr so status lines with em-dashes, arrows, and box-
+# drawing characters render correctly (and never crash with UnicodeEncodeError) on
+# Windows consoles that default to a legacy code page (cp1252). No-op where stdout
+# is already UTF-8 or not reconfigurable (e.g. piped through a non-text wrapper).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 # preflight is a stdlib-only sibling module; keep it importable even when the
 # pipeline is launched by absolute path from another directory. Suppress bytecode
 # so importing it never leaves a __pycache__ behind in the installed skill dir —
@@ -1867,7 +1877,11 @@ def _generate_repo_scaffolding(
     new_page_count: int,
     total_urls_mapped: int,
 ) -> None:
-    """Generate README.md, .gitignore, CLAUDE.md, and dev/notes.md in the repo root."""
+    """Generate README.md, .gitignore, and dev/notes.md in the repo root.
+
+    README.md is the single root doc (renders on GitHub, also readable by agents);
+    any CLAUDE.md from older generator versions is removed.
+    """
     domain = config.domain
     skill_name = config.skill_name
     install_cmd = f"npx skills add {owner}/{repo_name} -g --all"
@@ -1921,7 +1935,8 @@ def _generate_repo_scaffolding(
             f"{skill_name}/   ← the installable skill (this is what npx installs)\n"
             f"  ├── SKILL.md  ← how agents search the site\n"
             f"  └── pages/    ← one markdown file per page\n"
-            f"dev/_workspace/ ← scrape cache (state.json) that powers incremental updates\n"
+            f"dev/_workspace/ ← scrape cache (state.json); travels with the repo so any\n"
+            f"                  clone can do incremental updates. Don't delete it.\n"
             f"```\n"
         )
         with open(readme_path, "w", encoding="utf-8") as f:
@@ -1982,55 +1997,14 @@ def _generate_repo_scaffolding(
             f.write(notes_content)
         print(f"  Created dev/notes.md")
 
-    # CLAUDE.md: write only if doesn't exist
+    # README.md is the single root doc (it renders on GitHub and agents read it too).
+    # Remove a CLAUDE.md left by older generator versions so updated repos converge
+    # on the README-only layout. These are generated repos, not hand-edited, so a
+    # root CLAUDE.md is always our own stale artifact.
     claude_path = os.path.join(work_dir, "CLAUDE.md")
-    if not os.path.exists(claude_path):
-        claude_md_content = (
-            f"# {skill_name}\n"
-            f"\n"
-            f"Website search skill for {domain}. Hosted at github.com/{owner}/{repo_name}.\n"
-            f"\n"
-            f"## Repo structure\n"
-            f"\n"
-            f"The installable skill lives in the `{skill_name}/` subfolder (has SKILL.md at its root).\n"
-            f"Everything else (dev/, CLAUDE.md, .gitignore) stays at the repo root and is NOT part of\n"
-            f"the installed skill.\n"
-            f"\n"
-            f"```\n"
-            f"repo root/\n"
-            f"├── {skill_name}/           <- THIS gets installed by npx skills\n"
-            f"│   ├── SKILL.md\n"
-            f"│   └── pages/\n"
-            f"├── dev/                    <- dev artifacts, NOT installed\n"
-            f"│   ├── _workspace/         <- scrape cache (state.json) — the source of truth for re-runs\n"
-            f"│   └── notes.md\n"
-            f"├── README.md              <- GitHub landing page (install / share / update), NOT installed\n"
-            f"├── CLAUDE.md               <- this file, NOT installed\n"
-            f"└── .gitignore\n"
-            f"```\n"
-            f"\n"
-            f"## Installation\n"
-            f"\n"
-            f"This skill is installed from GitHub — never from a local path:\n"
-            f"```bash\n"
-            f"npx skills add {owner}/{repo_name} -g --all\n"
-            f"```\n"
-            f"\n"
-            f"## Updating\n"
-            f"\n"
-            f"The pipeline is GitHub-first: it clones this repo, updates it incrementally\n"
-            f"(scrape new pages, delete removed ones), pushes, and reinstalls — all in one run:\n"
-            f"```bash\n"
-            f'FIRECRAWL_API_KEY="fc-..." python path/to/pipeline.py https://{domain} --owner {owner}\n'
-            f"```\n"
-            f"\n"
-            f"The committed `dev/_workspace/state.json` is what makes incremental updates work\n"
-            f"from any machine — it travels with the repo, so a fresh clone knows what was\n"
-            f"already scraped. Do not delete it.\n"
-        )
-        with open(claude_path, "w", encoding="utf-8") as f:
-            f.write(claude_md_content)
-        print(f"  Created CLAUDE.md")
+    if os.path.exists(claude_path):
+        os.remove(claude_path)
+        print(f"  Removed CLAUDE.md (README is the single root doc)")
 
 
 def _run_git_push(
@@ -2314,7 +2288,8 @@ def _run_pipeline(
             new_urls = len(map_result["new_urls"])
             unchanged = len(map_result["unchanged_urls"])
             deleted = len(map_result["deleted_urls"])
-            scrape_cost = new_urls * 5 if not config.force_refresh else total_urls * 5
+            pages_to_scrape = total_urls if config.force_refresh else new_urls
+            scrape_cost = pages_to_scrape * 5
 
             print(f"\n{'='*60}")
             print(f"DRY RUN — summary (no scraping performed)")
@@ -2324,11 +2299,12 @@ def _run_pipeline(
             print(f"  New:          {new_urls}")
             print(f"  Unchanged:    {unchanged}")
             print(f"  Deleted:      {deleted}")
-            if config.max_pages and new_urls > config.max_pages:
+            if config.max_pages and pages_to_scrape > config.max_pages:
                 print(f"  Max pages:    {config.max_pages} (would cap scraping)")
-                scrape_cost = config.max_pages * 5
+                pages_to_scrape = config.max_pages
+                scrape_cost = pages_to_scrape * 5
             print(f"\n  Estimated cost to scrape: ~{1 + scrape_cost} Firecrawl credits")
-            print(f"    (1 credit for map already used + ~{scrape_cost} for {new_urls if not config.force_refresh else total_urls} pages)")
+            print(f"    (1 credit for map already used + ~{scrape_cost} for {pages_to_scrape} pages)")
             print(f"\n  To proceed: rerun without --dry-run")
             sys.exit(0)
 
@@ -2477,7 +2453,7 @@ def _run_pipeline(
     else:
         visibility = get_repo_visibility(owner, repo_name)
 
-    # Step 4: Generate repo scaffolding (README.md, CLAUDE.md, dev/notes.md, .gitignore)
+    # Step 4: Generate repo scaffolding (README.md, dev/notes.md, .gitignore)
     print(f"\n{'='*60}")
     print(f"STEP 4: Scaffolding -- generating repo files")
     print(f"{'='*60}")
