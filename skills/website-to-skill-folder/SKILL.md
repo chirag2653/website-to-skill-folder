@@ -20,9 +20,10 @@ The script handles everything — no need to read it.
 
 **GitHub is the source of truth.** Each run clones the user's skill repo from
 GitHub into a temp directory, updates it incrementally (scrape new pages, delete
-pages that disappeared from the site), pushes it back, and installs it via
-`npx skills add`. The temp directory is deleted afterward — nothing durable is
-left on the local machine. Re-running the same command later updates the same repo.
+pages that disappeared from the site), and pushes it back. Installing it locally
+via `npx skills add` is a quick, opt-in last step (Step 5). The temp directory is
+deleted afterward — nothing durable is left on the local machine, and the folder you
+run from is never touched. Re-running the same command later updates the same repo.
 
 ## 1. Locate the Skill
 
@@ -101,33 +102,31 @@ user, and continue only once they approve the spend.
 
 ## 4. Run the Pipeline
 
-One decision remains before the run: **how visible** the repo should be and **who owns it**.
-Confirm with the user (skip whatever they've already told you):
+For a **brand-new** skill, confirm one thing first: **private** (default) or **public**?
+(Public installs need no auth; private needs repo access. `--visibility public` for public;
+`--owner <org>` to host under a shared org.) For an **update** to a skill that already
+exists, **don't re-ask** — visibility is fixed; just run.
 
-- **Visibility** — **private** (default) or **public**? Public installs need no auth;
-  private requires each teammate to have repo access. Pass `--visibility public` for public.
-- **Owner** — defaults to their authenticated GitHub account (shown in the pre-flight
-  report). Pass `--owner <org-or-user>` to host it under a shared org instead.
-
-Then run it — inline the skill path and API key so the command is self-contained, and
-**always pass `--yes`** so it doesn't block on the interactive cost prompt:
+Run it non-interactively so nothing blocks the terminal. Pass `--yes` (auto-approves the
+cost you already previewed) and **`--no-install`** — the run pushes to GitHub now; installing
+locally is a separate, opt-in step you handle in Step 5:
 
 ```bash
-# default: private, under the authenticated account
-FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes
+# default: private, the authenticated account
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install
 # public, under an org
-FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --visibility public --owner my-org
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install --visibility public --owner my-org
 ```
 
-The pipeline clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, scrapes
-only new pages, deletes pages removed from the site, pushes, and installs it — all in one run.
+The run clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, scrapes only new
+pages, deletes pages removed from the site, and **pushes** — fast, no prompts, nothing
+installed on the machine yet.
 
 **IMPORTANT:**
-- Always pass `--yes` from an agent. Without it the pipeline shows an interactive cost
-  prompt and, on non-interactive stdin, cancels the run. (`--yes` also defaults a new repo
-  to **private** — add `--visibility public` if the user wants it public.)
-- `--visibility` only applies when the repo is first created; it's ignored on later
-  updates (manage visibility on GitHub after that).
+- Always pass `--yes` and `--no-install` from an agent: the run stays non-interactive and
+  doesn't touch the user's machine. You install conversationally in Step 5 — don't make the
+  user wait at a terminal prompt.
+- `--visibility` only applies when the repo is first created; it's ignored on later updates.
 - Set a **10-minute timeout** on the Bash call (e.g. `timeout: 600000`). Large sites take
   several minutes (scraping + API polling).
 
@@ -147,29 +146,43 @@ only new pages, deletes pages removed from the site, pushes, and installs it —
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
 | `--keep-temp` | Keep the temp working dir after the run (debugging) |
 
-## 5. After the Run
+## 5. Summarize, Then Install on Request
 
-The pipeline ends with a `DONE` block containing everything needed — relay it to the
-user, don't paraphrase the commands. It includes:
+The run prints a `DONE` block with the repo URL + visibility, the install command, the
+share command, and the update command. Give the user a short, flow-aware summary:
 
-- **Repo URL + visibility** (e.g. `https://github.com/{owner}/skill-folder-{skill_name}  (private)`).
-  The repo also has a generated `README.md` landing page with the same install/share info.
-- **Install status** — unless `--no-install`, the skill is already installed at
-  `~/.agents/skills/{skill_name}/`, so the user's agents can search the site offline now.
-- **Share command** — the single `npx skills add {owner}/skill-folder-{skill_name} -g --all`
-  to hand to teammates.
+- **Always:** "Done — your {domain} skill is live at {repo_url} ({visibility})."
+- **Public repo:** add "Anyone can install it — share this: `npx skills add {owner}/skill-folder-{skill_name} -g --all`."
+- **Private repo:** add "To share, give teammates repo access (or host under an org), then they run the same command."
 
-Report it to the user roughly like this:
+Then ask **once**: *"Want me to install it on this machine now so you can use it?"*
 
-> "Done — your {domain} skill is live at {repo_url} ({visibility}) and installed locally.
-> To share it, send teammates: `npx skills add {owner}/skill-folder-{skill_name} -g --all`
-> — {public: anyone can run it / private: they'll need read access to the repo first}.
-> Re-run me any time to update it; I'll only scrape new pages."
+If **yes**, install it from GitHub:
 
-If the repo is **private** and the user wants teammates to install it, remind them to grant
-access (add collaborators, or have used `--owner <org>` so the team already has access).
-If they want a **public**, no-auth-needed share link, the repo can be recreated with
-`--visibility public` (or flipped on GitHub).
+```bash
+npx skills add {owner}/skill-folder-{skill_name} -g --all
+```
+
+Then **validate** it actually landed — don't trust the exit code alone:
+
+```bash
+ls "$HOME/.agents/skills/{skill_name}/SKILL.md" >/dev/null 2>&1 && echo "INSTALLED" || echo "NOT FOUND"
+```
+
+- **INSTALLED** → "All set ✓ — the {domain} search skill is installed. Open a **new session**
+  and just ask me about {domain} (e.g. *'what does {domain} say about pricing?'*). I'll search
+  it offline and cite the source pages."
+- **NOT FOUND** → share the manual command, confirm Node is present (`node --version`), and
+  see Troubleshooting.
+
+If **no**, leave it — the skill is safe on GitHub and can be installed any time with the
+command above. (Repo URL → `{owner}/skill-folder-{skill_name}`; the skill installs to
+`~/.agents/skills/{skill_name}/`. `{skill_name}` is the domain with dots as hyphens, e.g.
+`example.com` → `example-com-website-search-skill`.)
+
+**Updating later** is the same run (Step 4, no need to re-ask visibility). For the install
+step, check first: if `~/.agents/skills/{skill_name}/` already exists, just reinstall
+silently to refresh it — don't re-ask. Only ask when it isn't installed yet.
 
 ## Troubleshooting & Recovery
 

@@ -38,6 +38,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New helpers: `resolve_owner()`, `repo_exists()`, `prepare_work_dir()`, `prompt_visibility()`.
 
 ### Changed
+- Agent flow (SKILL.md) now **always pushes** but **installs only on request**: the run is
+  non-interactive (`--yes --no-install`) so the user never waits at a terminal prompt; then
+  the agent gives a flow-aware summary (with a shareable link for public repos), asks once
+  whether to install locally, runs `npx skills add`, **validates** the skill landed in
+  `~/.agents/skills/{skill_name}/`, and confirms it's ready to use in a new session. On
+  updates it reinstalls silently if already present (no re-ask). Direct CLI runs still
+  auto-install unless `--no-install` is passed.
 - `--skip-scrape` now reassembles from the repo's committed cache and pushes; it no longer
   requires a Firecrawl API key.
 - `--dry-run` now also syncs with GitHub, so it reports only *new* pages for an existing repo.

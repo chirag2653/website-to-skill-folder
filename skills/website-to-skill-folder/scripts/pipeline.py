@@ -2528,8 +2528,9 @@ def _run_pipeline(
     if installed:
         print(f"  Installed for you:  ~/.agents/skills/{config.skill_name}/")
     else:
-        print(f"  Install it in your agent:")
+        print(f"  Install it (or let your agent do it on request):")
         print(f"    {install_cmd}")
+        print(f"    -> installs to ~/.agents/skills/{config.skill_name}/")
     print(f"")
     print(f"  Share with teammates — send them this one command:")
     print(f"    {install_cmd}")
