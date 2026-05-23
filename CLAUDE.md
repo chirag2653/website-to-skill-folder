@@ -214,6 +214,23 @@ Everything else is created inside the per-run working directory (a temp dir, or 
 the skill at `{work_dir}/{skill_name}/` and the cache at `{work_dir}/dev/_workspace/`. Nothing
 is written to `os.getcwd()` anymore, and the temp dir is deleted at the end of the run.
 
+## Local Footprint (what touches the user's machine)
+
+When a user runs the installed skill from a project folder, the local file I/O is:
+
+- **Their project folder (cwd): nothing.** No file in `os.getcwd()` is ever read or written.
+- **System temp:** exactly one dir, `tempfile.mkdtemp(prefix="website-to-skill-")`, holding
+  the clone + scrape cache. Removed in `main()`'s `finally` — covering success, `--dry-run`
+  exit, cost decline, exceptions, and KeyboardInterrupt. `prepare_work_dir()` also cleans its
+  own temp dir if `git clone` fails (it `sys.exit`s before that `finally` is armed). Survivors:
+  only `--work-dir` / `--keep-temp`, or a hard kill / power loss (OS reclaims `/tmp`).
+- **Installed skill dir (`~/.agents/skills/website-to-skill-folder/`): nothing.** It's read
+  only (template + `.env.local` are read). `pipeline.py` sets `sys.dont_write_bytecode = True`
+  before importing `preflight`, so not even a `__pycache__/*.pyc` is left behind — keep that line.
+- **Durable, intended:** the produced skill installed at `~/.agents/skills/{skill_name}/`
+  (the deliverable) and the repo on GitHub (the source of truth). Tool caches like `~/.npm`
+  and `~/.config/gh` are managed by those tools, not us.
+
 ## URL Filtering
 
 `filter_content_urls()` removes static asset URLs from Firecrawl's map results before any scraping occurs. This prevents wasting credits on Next.js/Nuxt build artifacts (`.css`, `.js`, `/_next/static/`, etc.). The function is applied at all three call sites in `map_website()`.

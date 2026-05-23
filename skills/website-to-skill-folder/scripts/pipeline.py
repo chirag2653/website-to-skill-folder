@@ -59,7 +59,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # preflight is a stdlib-only sibling module; keep it importable even when the
-# pipeline is launched by absolute path from another directory.
+# pipeline is launched by absolute path from another directory. Suppress bytecode
+# so importing it never leaves a __pycache__ behind in the installed skill dir —
+# the installed copy stays read-only, and the only durable artifact is the repo on GitHub.
+sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
