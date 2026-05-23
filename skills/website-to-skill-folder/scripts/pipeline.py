@@ -929,6 +929,11 @@ def load_existing_pages(urls: list[str], workspace_dir: str) -> list[dict]:
     return pages
 
 
+def _plural(n: int, word: str) -> str:
+    """Return '1 page' / '2 pages' — count plus the correctly pluralized word."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 # ---------------------------------------------------------------------------
 # Step 1: Map -- discover all URLs
 # ---------------------------------------------------------------------------
@@ -936,15 +941,18 @@ def load_existing_pages(urls: list[str], workspace_dir: str) -> list[dict]:
 
 @retry(**RETRY_CONFIG)
 def _map_website_api_call(
-    map_url: str, api_key: str, limit: int, ignore_cache: bool = False
+    map_url: str, api_key: str, limit: int
 ) -> list[str]:
     """Make the Map API call with automatic retries.
 
     Retries on transient failures (network, rate limit, server errors).
     Raises immediately on permanent failures (400, 401, 403, 404).
 
-    ignore_cache: pass True on --force-refresh so Firecrawl bypasses its
-    own cached sitemap data and returns a genuinely fresh URL list.
+    Always sends ignoreCache=True: this is a change-detection tool, so every map
+    must reflect the live site. Firecrawl's /map otherwise serves a cached URL
+    list (TTL of several minutes) that can miss pages published moments ago — the
+    cause of an incremental re-run reporting "0 new" right after a page goes live.
+    The map costs 1 credit whether cached or fresh, so there is no cost downside.
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -955,7 +963,7 @@ def _map_website_api_call(
         "includeSubdomains": False,
         "ignoreQueryParameters": True,
         "limit": limit,
-        "ignoreCache": ignore_cache,
+        "ignoreCache": True,
     }
 
     resp = requests.post(
@@ -1007,7 +1015,7 @@ def map_website(
     # --- Force refresh: ignore cache, call API ---
     if force_refresh:
         print("  Force refresh: ignoring cache")
-        new_urls = filter_content_urls(_map_website_api_call(map_url, api_key, limit, ignore_cache=True))
+        new_urls = filter_content_urls(_map_website_api_call(map_url, api_key, limit))
         cached_urls: list[str] = []
         print(f"  Found {len(new_urls)} URLs (1 credit used)")
 
@@ -1182,7 +1190,7 @@ def batch_scrape(
       - All API calls have automatic retry with exponential backoff
     """
     print(f"\n{'='*60}")
-    print(f"STEP 2: Batch Scrape -- scraping {len(urls)} pages")
+    print(f"STEP 2: Batch Scrape -- scraping {_plural(len(urls), 'page')}")
     print(f"{'='*60}")
 
     state = load_state(workspace_dir)
@@ -1303,7 +1311,7 @@ def batch_scrape(
 
         batch_credits = status_data.get("creditsUsed", 0)
         credits_used += batch_credits if isinstance(batch_credits, int) else 0
-        print(f"  Got {len(batch_pages)} pages ({batch_credits} credits)")
+        print(f"  Got {_plural(len(batch_pages), 'page')} ({batch_credits} credits)")
 
         # Save completed batch to state
         state["batches"][batch_id] = {
@@ -1709,7 +1717,7 @@ def prompt_cost_approval(
         print(f"  Max pages limit:  {max_pages}")
     print(f"")
     print(f"  Credits already used:  1  (map)")
-    print(f"  Credits remaining:     ~{scrape_cost}  ({scrape_count} pages x 5 credits)")
+    print(f"  Credits remaining:     ~{scrape_cost}  ({_plural(scrape_count, 'page')} x 5 credits)")
     print(f"  Total estimated cost:  ~{total_cost} credits")
     print(f"{'='*60}")
 
@@ -2304,7 +2312,7 @@ def _run_pipeline(
                 pages_to_scrape = config.max_pages
                 scrape_cost = pages_to_scrape * 5
             print(f"\n  Estimated cost to scrape: ~{1 + scrape_cost} Firecrawl credits")
-            print(f"    (1 credit for map already used + ~{scrape_cost} for {pages_to_scrape} pages)")
+            print(f"    (1 credit for map already used + ~{scrape_cost} for {_plural(pages_to_scrape, 'page')})")
             print(f"\n  To proceed: rerun without --dry-run")
             sys.exit(0)
 
@@ -2323,8 +2331,8 @@ def _run_pipeline(
                 map_result["unchanged_urls"], workspace_dir
             )
             print(
-                f"\n  Incremental: scraping {len(urls_to_scrape)} new URLs "
-                f"(reusing {len(existing_pages)} cached pages)"
+                f"\n  Incremental: scraping {_plural(len(urls_to_scrape), 'new URL')} "
+                f"(reusing {_plural(len(existing_pages), 'cached page')})"
             )
         elif map_result["unchanged_urls"] and not map_result["new_urls"]:
             # No new URLs -- load everything from cache
@@ -2369,8 +2377,8 @@ def _run_pipeline(
             original_count = len(urls_to_scrape)
             urls_to_scrape = urls_to_scrape[:config.max_pages]
             print(
-                f"\n  Max pages limit: limiting to first {config.max_pages} pages "
-                f"(discovered {original_count} URLs, will scrape {len(urls_to_scrape)} pages)"
+                f"\n  Max pages limit: limiting to first {_plural(config.max_pages, 'page')} "
+                f"(discovered {original_count} URLs, will scrape {_plural(len(urls_to_scrape), 'page')})"
             )
 
         # Cost approval gate: ask before the expensive scrape step
@@ -2414,7 +2422,7 @@ def _run_pipeline(
     print(f"{'='*60}")
 
     page_count = assemble_pages(pages, pages_dir)
-    print(f"  Wrote {page_count} page files to {pages_dir}/")
+    print(f"  Wrote {_plural(page_count, 'page file')} to {pages_dir}/")
 
     if page_count == 0:
         print(f"\n{'='*60}")
@@ -2485,7 +2493,7 @@ def _run_pipeline(
     else:
         credits_str = (
             f"~{1 + new_page_count * 5} "
-            f"(1 map + {new_page_count} pages x 5 scrape)"
+            f"(1 map + {_plural(new_page_count, 'page')} x 5 scrape)"
         )
 
     # Summary — clear, copy-paste orchestration for install + share + update.

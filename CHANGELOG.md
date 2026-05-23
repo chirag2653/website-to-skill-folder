@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Incremental re-runs now detect just-published pages.** The map step always requests a
+  fresh URL list (`ignoreCache: true`) instead of only on `--force-refresh`. Firecrawl's
+  `/map` caches results for several minutes, so a re-run shortly after publishing a page
+  previously reported "0 new" and missed it. The map costs 1 credit either way, so there's
+  no cost downside to always-fresh discovery. (Root cause confirmed against the live
+  Firecrawl API; the page was live, sitemapped, and scrapable — only discovery was stale.)
+- **Output pluralization** — counts now read "1 page" / "1 new URL" instead of "1 pages" /
+  "1 new URLs" via a `_plural()` helper, applied across the map/scrape/assemble/cost lines.
 - **Windows console encoding** — `pipeline.py` and `preflight.py` now force UTF-8 on
   stdout/stderr at startup, so status lines containing em-dashes/arrows/box-drawing
   characters render correctly (previously `�`) and never crash with `UnicodeEncodeError`
@@ -20,6 +28,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   generated (it was ~80% redundant with README and, unlike README, doesn't render on the
   GitHub repo page). The scaffolding step also removes any stale CLAUDE.md left by older
   generator versions, so updated repos converge on the README-only layout.
+- **This repo consolidated to a single root doc too.** The dev `CLAUDE.md` was folded into a
+  `## Development` section in `README.md` and removed, so the shared GitHub repo presents one
+  clean, production-ready landing page.
+
+### Added
+- **`tests/test_pipeline.py`** — lightweight, network-free regression tests (no pytest
+  dependency) covering the always-fresh map behavior and output pluralization.
 
 ### Changed (BREAKING) — GitHub-first architecture
 - The pipeline is now **GitHub-first**. GitHub is the source of truth: every run clones
