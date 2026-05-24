@@ -114,6 +114,7 @@ python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --
 | `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
 | `--skip-scrape` | Rebuild from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache and re-scrape all pages |
+| `--rebuild` | Full from-scratch rebuild — wipe the page folder + cache and re-scrape the entire site (clean mirror, no diffing). Implies `--force-refresh` |
 | `--allow-mass-deletion` | Bypass the safety guard that blocks deletions when a run would remove ≥30% of known pages (real purge/migration only) |
 | `--no-install` | Push to GitHub but skip the install step |
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |

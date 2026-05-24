@@ -162,6 +162,7 @@ installed on the machine yet.
 | `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
 | `--skip-scrape` | Rebuild the skill from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache, re-scrape all pages |
+| `--rebuild` | Full from-scratch rebuild: wipe the page folder + cache and re-scrape the ENTIRE site (clean mirror, no diffing). Implies `--force-refresh`. Slow, full credit cost — use when you just want a fresh clone |
 | `--allow-mass-deletion` | Bypass the safety guard that blocks deletions when a map run would remove ≥30% of known pages. Use only for a *real* mass removal or site migration |
 | `--no-install` | Push to GitHub but skip the npx install step |
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
@@ -225,7 +226,11 @@ Use `--skip-scrape`. It clones the repo, reassembles from the committed cache (z
 Firecrawl credits, no API key needed), and pushes. Useful after a template change.
 
 **Pages seem stale or site was redesigned?**
-Use `--force-refresh` to ignore the cache and re-scrape everything.
+Use `--force-refresh` to ignore the cache and re-scrape every current page. For a guaranteed
+clean mirror — re-scrape everything AND drop page files for URLs that no longer exist — use
+`--rebuild` (wipes the page folder + cache first, no diffing). `--rebuild` is the "just give me a
+fresh clone of the whole site, don't make me think about diffs" option; it's slow and costs full
+Firecrawl credits.
 
 **Pages disappeared from the site?**
 The pipeline tracks URLs that vanish from the map and deletes their page files only after

@@ -174,6 +174,7 @@ class PipelineInput(BaseModel):
     max_pages: int | None = None  # Max pages to scrape (controls final skill folder size)
     skip_scrape: bool = False
     force_refresh: bool = False
+    rebuild: bool = False  # Wipe the page folder + cache and re-scrape the whole site (implies force_refresh)
     allow_mass_deletion: bool = False  # Bypass the mass-deletion circuit breaker (real removal/migration)
     dry_run: bool = False  # Show what would happen without scraping
     yes: bool = False  # Auto-approve cost + visibility prompts (skip interactive confirmation)
@@ -278,6 +279,12 @@ class PipelineInput(BaseModel):
         self.skill_name = domain_to_skill_name(self.domain)
         self.repo_name = f"skill-folder-{self.skill_name}"
 
+        # --rebuild is "scrape everything from scratch" + a clean page folder, so it
+        # subsumes --force-refresh (ignore cache, re-scrape all). Set it here so every
+        # downstream force_refresh branch applies without threading a second flag.
+        if self.rebuild:
+            self.force_refresh = True
+
         if not self.description:
             self.description = f"a website at {self.domain}."
 
@@ -365,6 +372,16 @@ def parse_args() -> PipelineInput:
         help="Ignore all cache, scrape everything from scratch",
     )
     parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help=(
+            "Full from-scratch rebuild: wipe the existing page folder and local cache, then "
+            "re-scrape the ENTIRE site (no incremental comparison). The result is a clean mirror "
+            "of the live site. Implies --force-refresh. Slow and uses full Firecrawl credits — "
+            "use when you just want a fresh clone without thinking about diffs."
+        ),
+    )
+    parser.add_argument(
         "--allow-mass-deletion",
         action="store_true",
         help=(
@@ -424,6 +441,8 @@ def parse_args() -> PipelineInput:
     # Validate mutually exclusive flags
     if args.skip_scrape and args.force_refresh:
         parser.error("--skip-scrape and --force-refresh are mutually exclusive")
+    if args.skip_scrape and args.rebuild:
+        parser.error("--skip-scrape and --rebuild are mutually exclusive")
     if args.dry_run and args.skip_scrape:
         parser.error("--dry-run and --skip-scrape are mutually exclusive")
 
@@ -453,6 +472,7 @@ def parse_args() -> PipelineInput:
             max_pages=args.max_pages,
             skip_scrape=args.skip_scrape,
             force_refresh=args.force_refresh,
+            rebuild=args.rebuild,
             allow_mass_deletion=args.allow_mass_deletion,
             dry_run=args.dry_run,
             yes=args.yes,
@@ -2330,6 +2350,25 @@ def _run_pipeline(
     print(f"  Work dir:    {work_dir}")
     print(f"  Skill dir:   {skill_output}")
     print(f"  Workspace:   {workspace_dir}")
+
+    # --rebuild: drop the cloned page folder + local cache so this run is a clean,
+    # from-scratch mirror of the live site (no incremental comparison, no orphans
+    # left over from pages that have since disappeared). rebuild implies force_refresh,
+    # so every page is re-scraped below; here we just clear the slate.
+    if config.rebuild:
+        removed = 0
+        for fname in os.listdir(pages_dir):
+            if fname.endswith(".md"):
+                os.remove(os.path.join(pages_dir, fname))
+                removed += 1
+        for cache_file in ("state.json", "batch-response.json", "map-urls.txt", "map-request.json"):
+            fp = os.path.join(workspace_dir, cache_file)
+            if os.path.exists(fp):
+                os.remove(fp)
+        print(
+            f"\n  Rebuild: cleared {_plural(removed, 'existing page file')} and local cache — "
+            f"re-scraping the entire site from scratch."
+        )
 
     total_urls_mapped = 0  # Updated after map step (0 if --skip-scrape)
 
