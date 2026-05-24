@@ -175,42 +175,6 @@ Incremental re-runs only pay for new pages. `--skip-scrape` costs 0 credits.
 
 ---
 
-## Development
-
-This repo is the "workshop" for the skill — edit here, push to GitHub, then reinstall in your agents. Only `skills/website-to-skill-folder/` ships on install; everything else is dev scaffolding.
-
-**Layout**
-- `skills/website-to-skill-folder/SKILL.md` — agent-facing instructions for running the pipeline
-- `skills/website-to-skill-folder/scripts/pipeline.py` — the pipeline (~2400 lines)
-- `skills/website-to-skill-folder/scripts/preflight.py` — stdlib-only environment check (run before the pipeline)
-- `skills/website-to-skill-folder/scripts/skill-md.template` — template rendered into each generated skill's SKILL.md
-- `tests/test_pipeline.py` — lightweight regression tests (no network, no pytest)
-
-`pipeline.py`, `skill-md.template`, and `.env.local` must stay siblings — the script locates the template and the API key by a path relative to `pipeline.py`.
-
-**Test** (no API calls unless noted)
-```bash
-# Syntax check both scripts
-python -c "import py_compile; py_compile.compile('skills/website-to-skill-folder/scripts/preflight.py', doraise=True); py_compile.compile('skills/website-to-skill-folder/scripts/pipeline.py', doraise=True)"
-
-# Regression tests (monkeypatched — no network)
-python tests/test_pipeline.py
-
-# End-to-end discovery + cost preview (1 Firecrawl map credit, no scrape, no push)
-python skills/website-to-skill-folder/scripts/pipeline.py example.com --dry-run
-```
-
-**Deploy a change**
-```bash
-git add skills/ tests/ && git commit -m "..." && git push
-rm -rf "$HOME/.agents/skills/website-to-skill-folder"
-npx skills add chirag2653/website-to-skill-folder -g -y
-```
-
-The map step always requests a fresh URL list (Firecrawl's `/map` caches for a few minutes, which would otherwise hide pages published moments before a re-run). The map costs 1 credit either way.
-
----
-
 ## Requirements
 
 - Python 3.8+ and `pip install -r requirements.txt`

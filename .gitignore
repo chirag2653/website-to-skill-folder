@@ -2,8 +2,11 @@
 _workspace/
 output/
 
-# Development notes (internal documentation, not for public repo)
+# Development-only — kept local, never pushed to the public repo
 _dev-notes/
+CLAUDE.md
+CHANGELOG.md
+tests/
 
 # Python
 __pycache__/
