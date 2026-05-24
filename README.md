@@ -87,7 +87,7 @@ The agent runs the pipeline, pushes the skill to your GitHub, and installs it.
 
 ### Prerequisites
 
-1. **Python 3.8+** and dependencies: `pip install -r requirements.txt`
+1. **Python 3.8+** — the bundled `preflight.py` installs the rest (`requests`, `pydantic`, `tenacity`) for you when you run it. To install manually: `pip install requests pydantic tenacity`.
 2. **GitHub CLI**, authenticated — install [`gh`](https://cli.github.com), then `gh auth login`. GitHub is where the skill lives.
 3. **Node.js** (for `npx skills add`) — [nodejs.org](https://nodejs.org). Skip with `--no-install`.
 4. **Firecrawl API key** — free at [firecrawl.dev](https://firecrawl.dev). Set it via:
@@ -177,7 +177,7 @@ Incremental re-runs only pay for new pages. `--skip-scrape` costs 0 credits.
 
 ## Requirements
 
-- Python 3.8+ and `pip install -r requirements.txt`
+- Python 3.8+ (the bundled `preflight.py` auto-installs `requests`, `pydantic`, `tenacity`)
 - [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`)
 - [Node.js](https://nodejs.org) (for `npx skills add`)
 - [Firecrawl](https://firecrawl.dev) API key
