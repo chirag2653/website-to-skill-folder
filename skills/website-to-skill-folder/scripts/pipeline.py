@@ -174,6 +174,7 @@ class PipelineInput(BaseModel):
     max_pages: int | None = None  # Max pages to scrape (controls final skill folder size)
     skip_scrape: bool = False
     force_refresh: bool = False
+    allow_mass_deletion: bool = False  # Bypass the mass-deletion circuit breaker (real removal/migration)
     dry_run: bool = False  # Show what would happen without scraping
     yes: bool = False  # Auto-approve cost + visibility prompts (skip interactive confirmation)
     owner: str | None = None  # GitHub owner (account/org); auto-derived from gh if None
@@ -364,6 +365,15 @@ def parse_args() -> PipelineInput:
         help="Ignore all cache, scrape everything from scratch",
     )
     parser.add_argument(
+        "--allow-mass-deletion",
+        action="store_true",
+        help=(
+            "Bypass the safety guard that blocks deletions when a single map run would "
+            "remove >=30%% of known pages (normally a glitch/outage). Use only when a real "
+            "mass removal or site migration is expected."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Map the site and show cost estimate, but don't scrape or push. Uses 1 Firecrawl credit for the map step (or 0 if cache exists).",
@@ -443,6 +453,7 @@ def parse_args() -> PipelineInput:
             max_pages=args.max_pages,
             skip_scrape=args.skip_scrape,
             force_refresh=args.force_refresh,
+            allow_mass_deletion=args.allow_mass_deletion,
             dry_run=args.dry_run,
             yes=args.yes,
             owner=args.owner,
@@ -471,6 +482,11 @@ POLL_INTERVAL = 5         # seconds between status checks
 MAX_POLL_TIME = 600       # 10 minutes max wait per batch
 REQUEST_TIMEOUT = (10, 30)  # (connect_timeout, read_timeout) in seconds
 DELETION_MISS_THRESHOLD = 3  # Consecutive map misses before deleting a page file
+MAX_DELETION_RATIO = 0.30    # Circuit breaker: if a single map run would remove >= this
+                             # fraction of known pages, treat the map as untrusted (a
+                             # glitch/outage/parking page, not a real mass deletion), keep
+                             # the last-known-good map, and skip deletions this run.
+                             # Override a genuine mass removal with --allow-mass-deletion.
 MAX_SLUG_LEN = 80         # Max slug length to avoid Windows MAX_PATH (260 char) crashes
 
 # JSON extraction prompt -- tells Firecrawl's LLM what we want (see plan.md D3)
@@ -887,6 +903,50 @@ def compare_maps(new_urls: list[str], cached_urls: list[str]) -> dict:
     }
 
 
+def assess_map_health(
+    new_urls: list[str],
+    cached_urls: list[str],
+    max_deletion_ratio: float = MAX_DELETION_RATIO,
+) -> dict:
+    """Circuit breaker: decide whether a fresh map is trustworthy enough to act on deletions.
+
+    A map call can return HTTP 200 yet hand back a degraded list — a site behind a
+    maintenance/Cloudflare page, an empty or broken sitemap, a DNS blip resolving to a
+    parking page, partial Firecrawl degradation. Retries don't catch this (the call
+    "succeeded"). Acting on it would mark live pages as deleted. Production sync engines
+    guard against exactly this: if a single run would remove an implausible fraction of
+    known pages, treat the map as untrusted, keep the last-known-good snapshot, and skip
+    deletion accounting for this run.
+
+    Only meaningful once we HAVE a cache to compare against (the first run trusts the map
+    by definition). Returns:
+        {"trusted": bool, "reason": str, "deleted_ratio": float}
+    """
+    if not cached_urls:
+        return {"trusted": True, "reason": "first run — no cache to compare", "deleted_ratio": 0.0}
+
+    cached_set = set(cached_urls)
+    deleted = cached_set - set(new_urls)
+    ratio = len(deleted) / len(cached_set)
+
+    if not new_urls:
+        return {
+            "trusted": False,
+            "reason": f"map returned 0 URLs against a cache of {len(cached_set)} pages",
+            "deleted_ratio": 1.0,
+        }
+    if ratio >= max_deletion_ratio:
+        return {
+            "trusted": False,
+            "reason": (
+                f"map would remove {ratio:.0%} of known pages "
+                f"({len(deleted)}/{len(cached_set)}) — exceeds the {max_deletion_ratio:.0%} guard"
+            ),
+            "deleted_ratio": ratio,
+        }
+    return {"trusted": True, "reason": "", "deleted_ratio": ratio}
+
+
 def load_existing_pages(urls: list[str], workspace_dir: str) -> list[dict]:
     """Load previously scraped pages for the given URLs from cache.
 
@@ -1000,6 +1060,7 @@ def map_website(
     workspace_dir: str,
     skip_scrape: bool = False,
     force_refresh: bool = False,
+    allow_mass_deletion: bool = False,
 ) -> dict:
     """Map website with incremental update / idempotency / force-refresh support.
 
@@ -1075,15 +1136,53 @@ def map_website(
             except OSError:
                 cached_urls = []
 
-    # Save new map (always, unless we returned early from cache above)
-    with open(map_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(new_urls))
-    with open(map_request_path, "w", encoding="utf-8") as f:
-        json.dump({"url": map_url, "limit": limit}, f)
-    print(f"  Saved URL list to {map_path}")
+    # First-run guard: an empty map with no cache means we'd publish a 0-page skill.
+    # That's never what the user wants — almost always a wrong URL, an outage, or a
+    # site that blocks crawling. Fail loudly instead of shipping an empty product.
+    if not cached_urls and not new_urls and not force_refresh:
+        raise RuntimeError(
+            f"Map returned 0 URLs for {map_url} and there is no cached map to fall back on.\n"
+            "  Nothing would be scraped and the skill would be empty. Likely causes:\n"
+            "  - the site is down / behind a login or anti-bot wall\n"
+            "  - the domain is wrong, or the site has no crawlable/sitemap pages\n"
+            "  Verify the URL in a browser and try again."
+        )
+
+    # Circuit breaker: is this map trustworthy enough to act on deletions?
+    # force-refresh and an explicit --allow-mass-deletion both bypass the guard.
+    health = assess_map_health(new_urls, cached_urls)
+    trusted = health["trusted"] or force_refresh or allow_mass_deletion
+
+    # Persist the new map ONLY when trusted — otherwise keep the last-known-good
+    # snapshot so a glitchy run can't poison the next run's comparison (which would
+    # otherwise re-scrape the whole site against an emptied cache).
+    if trusted:
+        with open(map_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_urls))
+        with open(map_request_path, "w", encoding="utf-8") as f:
+            json.dump({"url": map_url, "limit": limit}, f)
+        print(f"  Saved URL list to {map_path}")
 
     # Compare for incremental update
     comparison = compare_maps(new_urls, cached_urls)
+
+    if not trusted:
+        # Untrusted map: keep every known page, scrape only genuinely-new URLs, and
+        # take NO deletions this run. The override (--allow-mass-deletion) would have
+        # set trusted=True, so reaching here means the guard tripped on a likely glitch.
+        print(f"\n  [SYNC GUARD] Map looks untrustworthy — {health['reason']}.")
+        print("              Keeping all known pages and skipping deletions this run.")
+        print("              If this really was a mass removal/migration, re-run with --allow-mass-deletion.")
+        effective_urls = sorted(set(comparison["new"]) | set(cached_urls))
+        return {
+            "urls": effective_urls,
+            "new_urls": comparison["new"],
+            "unchanged_urls": sorted(cached_urls),
+            "deleted_urls": [],
+            "from_cache": False,
+            "map_trusted": False,
+            "untrusted_reason": health["reason"],
+        }
 
     if cached_urls:
         print(
@@ -1091,6 +1190,8 @@ def map_website(
             f"{len(comparison['unchanged'])} unchanged, "
             f"{len(comparison['deleted'])} deleted"
         )
+        if allow_mass_deletion and not health["trusted"]:
+            print(f"  (--allow-mass-deletion: proceeding despite {health['reason']})")
     else:
         print(f"  First run -- all {len(new_urls)} URLs are new")
 
@@ -1100,6 +1201,8 @@ def map_website(
         "unchanged_urls": comparison["unchanged"],
         "deleted_urls": comparison["deleted"],
         "from_cache": False,
+        "map_trusted": True,
+        "untrusted_reason": "",
     }
 
 
@@ -1349,10 +1452,20 @@ def batch_scrape(
 # ---------------------------------------------------------------------------
 
 
-def assemble_pages(pages: list[dict], pages_dir: str) -> int:
-    """Write individual page markdown files with YAML frontmatter."""
+def assemble_pages(pages: list[dict], pages_dir: str) -> dict:
+    """Write individual page markdown files with YAML frontmatter.
+
+    Idempotent: a page whose rendered content is byte-for-byte identical to the file
+    already in the cloned repo is left untouched. This keeps git diffs minimal (only
+    pages that actually changed show up) and gives an honest added/updated/unchanged
+    report — the content dimension of the sync, since Firecrawl's /map can't tell us
+    which existing pages changed.
+
+    Returns {"total", "added", "updated", "unchanged"} where total is the number of
+    page files now present (the skill's page count).
+    """
     os.makedirs(pages_dir, exist_ok=True)
-    count = 0
+    added = updated = unchanged = 0
 
     for page in pages:
         metadata = page.get("metadata", {})
@@ -1383,19 +1496,36 @@ def assemble_pages(pages: list[dict], pages_dir: str) -> int:
         
         clean_md = clean_markdown(markdown)
 
+        new_content = (
+            "---\n"
+            f'title: "{yaml_escape(title)}"\n'
+            f'description: "{yaml_escape(description)}"\n'
+            f'url: "{source_url}"\n'
+            "summary: |\n"
+            f"{wrap_summary(summary)}\n"
+            "---\n\n"
+            f"{clean_md}"
+        )
+
+        existed = os.path.exists(filepath)
+        if existed:
+            try:
+                with open(filepath, encoding="utf-8") as f:
+                    if f.read() == new_content:
+                        unchanged += 1
+                        continue  # byte-identical — don't rewrite (no git churn)
+            except OSError:
+                pass  # unreadable — fall through and rewrite it
+
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("---\n")
-            f.write(f'title: "{yaml_escape(title)}"\n')
-            f.write(f'description: "{yaml_escape(description)}"\n')
-            f.write(f'url: "{source_url}"\n')
-            f.write("summary: |\n")
-            f.write(wrap_summary(summary) + "\n")
-            f.write("---\n\n")
-            f.write(clean_md)
+            f.write(new_content)
+        if existed:
+            updated += 1
+        else:
+            added += 1
 
-        count += 1
-
-    return count
+    total = added + updated + unchanged
+    return {"total": total, "added": added, "updated": updated, "unchanged": unchanged}
 
 
 def extract_site_description(
@@ -2257,50 +2387,59 @@ def _run_pipeline(
             workspace_dir=workspace_dir,
             skip_scrape=False,
             force_refresh=config.force_refresh,
+            allow_mass_deletion=config.allow_mass_deletion,
         )
 
         total_urls_mapped = len(map_result["urls"])
 
-        # Save map state + update deletion candidates in one write
+        # Record the fresh map snapshot (persisted only on a real run, below).
         state = load_state(workspace_dir)
         state["map"] = {
             "urls": map_result["urls"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": {"url": config.map_url, "limit": config.limit},
         }
-        urls_to_delete = update_deletion_candidates(
-            state,
-            map_result["deleted_urls"],
-            map_result["urls"],
-        )
-        save_state(workspace_dir, state)
 
-        # Log deletion candidate status
-        pending = state.get("deletion_candidates", {})
-        if pending:
-            print(f"\n  {len(pending)} URL(s) absent from map (not yet deleted):")
-            for url, data in list(pending.items())[:5]:
-                remaining = DELETION_MISS_THRESHOLD - data["consecutive_misses"]
-                print(f"    [{data['consecutive_misses']}/{DELETION_MISS_THRESHOLD} misses] {url}")
-            if len(pending) > 5:
-                print(f"    ... and {len(pending) - 5} more")
-            print(f"    (will delete after {DELETION_MISS_THRESHOLD} consecutive misses)")
-        if urls_to_delete:
-            print(f"\n  {len(urls_to_delete)} URL(s) confirmed absent for {DELETION_MISS_THRESHOLD}+ runs -- will delete page files")
+        # Deletion handling. A dry-run is a PURE preview: it must not advance the
+        # debounce counters or remove files. A real run advances the counters,
+        # persists state, and deletes only pages confirmed absent for N runs.
+        urls_to_delete: list[str] = []
+        if config.dry_run:
+            absent = map_result["deleted_urls"]
+            if absent:
+                print(
+                    f"\n  {_plural(len(absent), 'URL')} absent from this map — deletion is "
+                    f"debounced over {DELETION_MISS_THRESHOLD} runs, so none would be removed yet "
+                    f"(a dry-run changes no counters)."
+                )
+        else:
+            urls_to_delete = update_deletion_candidates(
+                state,
+                map_result["deleted_urls"],
+                map_result["urls"],
+            )
+            save_state(workspace_dir, state)
 
-        # Delete orphaned page files immediately (before approval gate,
-        # since update_deletion_candidates already removed them from state)
-        if urls_to_delete:
-            deleted_file_count = 0
-            for url in urls_to_delete:
-                slug = url_to_slug(url)
-                filepath = os.path.join(pages_dir, f"{slug}.md")
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-                    deleted_file_count += 1
-                    logger.info(f"Deleted orphaned page: {url}")
-            if deleted_file_count:
-                print(f"  Deleted {deleted_file_count} orphaned page file(s)")
+            pending = state.get("deletion_candidates", {})
+            if pending:
+                print(f"\n  {len(pending)} URL(s) absent from map (not yet deleted):")
+                for url, data in list(pending.items())[:5]:
+                    print(f"    [{data['consecutive_misses']}/{DELETION_MISS_THRESHOLD} misses] {url}")
+                if len(pending) > 5:
+                    print(f"    ... and {len(pending) - 5} more")
+                print(f"    (will delete after {DELETION_MISS_THRESHOLD} consecutive misses)")
+            if urls_to_delete:
+                print(f"\n  {len(urls_to_delete)} URL(s) confirmed absent for {DELETION_MISS_THRESHOLD}+ runs -- deleting page files")
+                deleted_file_count = 0
+                for url in urls_to_delete:
+                    slug = url_to_slug(url)
+                    filepath = os.path.join(pages_dir, f"{slug}.md")
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                        deleted_file_count += 1
+                        logger.info(f"Deleted orphaned page: {url}")
+                if deleted_file_count:
+                    print(f"  Deleted {deleted_file_count} orphaned page file(s)")
 
         # Dry-run: show summary and exit without scraping
         if config.dry_run:
@@ -2445,8 +2584,11 @@ def _run_pipeline(
     print(f"STEP 3: Assemble -- building skill folder")
     print(f"{'='*60}")
 
-    page_count = assemble_pages(pages, pages_dir)
-    print(f"  Wrote {_plural(page_count, 'page file')} to {pages_dir}/")
+    assembly = assemble_pages(pages, pages_dir)
+    page_count = assembly["total"]
+    print(f"  {_plural(page_count, 'page file')} in {pages_dir}/ "
+          f"({assembly['added']} added, {assembly['updated']} updated, "
+          f"{assembly['unchanged']} unchanged)")
 
     if page_count == 0:
         print(f"\n{'='*60}")

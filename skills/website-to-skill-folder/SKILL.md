@@ -162,6 +162,7 @@ installed on the machine yet.
 | `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
 | `--skip-scrape` | Rebuild the skill from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache, re-scrape all pages |
+| `--allow-mass-deletion` | Bypass the safety guard that blocks deletions when a map run would remove ≥30% of known pages. Use only for a *real* mass removal or site migration |
 | `--no-install` | Push to GitHub but skip the npx install step |
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
 | `--keep-temp` | Keep the temp working dir after the run (debugging) |
@@ -227,8 +228,19 @@ Firecrawl credits, no API key needed), and pushes. Useful after a template chang
 Use `--force-refresh` to ignore the cache and re-scrape everything.
 
 **Pages disappeared from the site?**
-The pipeline tracks URLs that vanish from the map and deletes their page files after
+The pipeline tracks URLs that vanish from the map and deletes their page files only after
 3 consecutive runs confirm them gone (guards against transient crawl failures).
+
+**Saw a `[SYNC GUARD]` warning, or expected deletions didn't happen?**
+A circuit breaker treats a map as untrustworthy when a single run would remove ≥30% of known
+pages (or returns 0 URLs against a non-empty cache) — almost always a glitch: the site was down,
+behind an anti-bot/maintenance page, or its sitemap broke. On an untrusted run the pipeline keeps
+the last-known-good page set, scrapes only genuinely-new URLs, and takes **no** deletions. If the
+removal was real (a deliberate purge or a site migration), re-run with `--allow-mass-deletion`.
+
+**"Map returned 0 URLs … skill would be empty" error?**
+A first run found no pages and has no cache to fall back on — usually a wrong domain, an outage, or
+a site that blocks crawling. Verify the URL in a browser; the pipeline refuses to publish an empty skill.
 
 **`gh` auth or push errors?**
 Run `gh auth status`; if not logged in, `gh auth login`. The owner must have permission

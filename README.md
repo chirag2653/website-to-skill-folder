@@ -114,6 +114,7 @@ python skills/website-to-skill-folder/scripts/pipeline.py https://example.com --
 | `--dry-run` | Sync + map + show cost estimate, then exit (no scrape, no push) |
 | `--skip-scrape` | Rebuild from the repo's committed cache and push — no scrape, no Firecrawl key |
 | `--force-refresh` | Ignore cache and re-scrape all pages |
+| `--allow-mass-deletion` | Bypass the safety guard that blocks deletions when a run would remove ≥30% of known pages (real purge/migration only) |
 | `--no-install` | Push to GitHub but skip the install step |
 | `--work-dir PATH` | Use a persistent local dir instead of a temp dir (debugging) |
 
@@ -154,6 +155,7 @@ summary: |
 - **GitHub-hosted** — The skill lives in a repo you own; install and update from anywhere.
 - **Incremental updates** — Clones the repo and re-scrapes only new pages on each run.
 - **Update-and-delete** — Pages removed from the site are deleted after 3 consecutive map misses (guards against transient failures).
+- **Glitch-resistant sync** — A circuit breaker distrusts a degraded map (site down, anti-bot wall, broken/empty sitemap): if a run would remove ≥30% of known pages it keeps the last-known-good set and skips deletions, so transient failures never wipe live pages. Identical pages are never rewritten, keeping diffs clean.
 - **Resumable** — Progress is saved to the committed cache; an interrupted run picks up where it stopped.
 - **Public or private** — Your choice at creation; host under an org to share with a team.
 - **SEO-aware extraction** — Prefers `<meta>` tags over LLM extraction for title and description.
