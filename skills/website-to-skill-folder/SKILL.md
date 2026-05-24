@@ -120,8 +120,23 @@ repo that was since deleted.
 
 For a **brand-new** skill, confirm just the one undecided axis: **private** (default) or
 **public**? (Public installs need no auth; private needs repo access. `--visibility public`
-for public; `--owner <org>` to host under a shared org.) For an **update** to a repo that
-already exists, **don't re-ask** — visibility is fixed; just run.
+for public; `--owner <org>` to host under a shared org.)
+
+For an **update** to a repo that already exists (the dry-run cloned it), **don't re-ask
+visibility** — it's fixed. But this site was built before, so the user has a real choice in
+how to refresh it. Ask it with the **AskUserQuestion** tool — a single question, two options:
+
+- **Incremental update (recommended)** — diff the live site against what's stored: scrape only
+  new pages, refresh nothing unchanged, and remove pages gone for 3+ runs. Fast, cheap (you
+  already previewed the credit cost in the dry-run). This is the normal run (no extra flag).
+- **Full rebuild** — wipe the stored page folder and re-scrape the **entire** site from scratch
+  (`--rebuild`), producing a clean mirror with no diffing and no leftover pages. Slower and full
+  Firecrawl credit cost. Pick this when the user "just wants a fresh clone and doesn't want to
+  think about diffs," or suspects the stored copy drifted.
+
+Skip this question only if the user already told you which they want (e.g. they said "rebuild
+it" / "just re-scrape everything" → go straight to `--rebuild`; "just update it" → incremental).
+For a brand-new repo there's nothing to rebuild — don't ask.
 
 Don't re-ask the **page cap** if the user already gave one, and don't bundle the cap into the
 visibility question — they're independent axes. Ask visibility on its own; treat a cap the
@@ -132,10 +147,12 @@ cost you already previewed) and **`--no-install`** — the run pushes to GitHub 
 locally is a separate, opt-in step you handle in Step 5:
 
 ```bash
-# default: private, the authenticated account
+# default: private, the authenticated account (incremental update if the repo exists)
 FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install
 # public, under an org
 FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install --visibility public --owner my-org
+# full rebuild (user chose "fresh clone"): wipe + re-scrape the entire site, then push
+FIRECRAWL_API_KEY="fc-their_key" python "$SKILL_DIR/scripts/pipeline.py" https://example.com --yes --no-install --rebuild
 ```
 
 The run clones (or creates) `github.com/{owner}/skill-folder-{skill_name}`, scrapes only new
