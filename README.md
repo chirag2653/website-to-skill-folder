@@ -181,3 +181,9 @@ Incremental re-runs only pay for new pages. `--skip-scrape` costs 0 credits.
 - [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`)
 - [Node.js](https://nodejs.org) (for `npx skills add`)
 - [Firecrawl](https://firecrawl.dev) API key
+
+---
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute.
