@@ -1,0 +1,10 @@
+{
+  "name": "website-to-skill-folder",
+  "description": "Convert any website into an AI-searchable skill folder — scrapes pages via Firecrawl and generates ripgrep-searchable markdown with YAML frontmatter that agents can search without loading every page.",
+  "author": {
+    "name": "Chirag Jain",
+    "url": "https://github.com/chirag2653"
+  },
+  "homepage": "https://github.com/chirag2653/website-to-skill-folder",
+  "license": "MIT"
+}
