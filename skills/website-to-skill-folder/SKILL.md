@@ -28,9 +28,12 @@ run from is never touched. Re-running the same command later updates the same re
 ## 1. Locate the Skill
 
 ```bash
-SKILL_DIR="$HOME/.agents/skills/website-to-skill-folder"
-[ -d "$SKILL_DIR" ] || SKILL_DIR=$(find "$HOME/.agents/skills" "$HOME/.claude/skills" \
-  -maxdepth 2 -type d -name "website-to-skill-folder" 2>/dev/null | head -1)
+# Resolve across both install modes: Claude Code plugin (cache dir, exposed as
+# $CLAUDE_PLUGIN_ROOT) or `npx skills` (~/.agents/skills).
+SKILL_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/skills/website-to-skill-folder}"
+[ -d "$SKILL_DIR" ] || SKILL_DIR="$HOME/.agents/skills/website-to-skill-folder"
+[ -d "$SKILL_DIR" ] || SKILL_DIR=$(find "$HOME/.agents/skills" "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" \
+  -maxdepth 4 -type d -name "website-to-skill-folder" 2>/dev/null | head -1)
 echo "Skill dir: $SKILL_DIR"
 ```
 
